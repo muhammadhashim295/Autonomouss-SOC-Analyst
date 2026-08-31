@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.core.firewall import check_alert, sanitize_snippet
 from app.db.supabase_client import get_supabase
 from app.models.schemas import AlertCreate, AlertResponse
+from app.services.investigation import persist_case
 from app.services.qoder_client import QoderClientError, get_qoder_client
 from app.services.skills import (
     correlate_logs,
@@ -129,8 +130,14 @@ async def enrich_alert(alert_id: str) -> dict[str, Any]:
 async def triage_alert(alert_id: str) -> dict[str, Any]:
     """Trigger the Primary Agent to investigate a specific alert.
 
-    Creates a Qoder session, sends the alert payload, and collects
-    the agent's investigation report.
+    Phase 7 full investigation flow:
+    1. Retrieves similar past cases (stub — Phase 11)
+    2. Runs all 4 investigation skills
+    3. Sends structured prompt to the Qoder agent
+    4. Parses the agent's response (verdict, confidence, reasoning, self-audit)
+    5. Classifies impact level
+    6. Persists the case to the ``cases`` table
+    7. Returns the full case record
     """
     client = get_supabase()
 
@@ -144,7 +151,7 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
     # 2. Update status to in_review
     client.table("alerts").update({"status": "in_review"}).eq("id", alert_id).execute()
 
-    # 3. Call Qoder agent
+    # 3. Call Qoder agent (full investigation flow)
     try:
         qoder = get_qoder_client()
         triage_result = qoder.triage_alert(alert)
@@ -153,10 +160,31 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
         client.table("alerts").update({"status": "pending"}).eq("id", alert_id).execute()
         raise HTTPException(status_code=502, detail=f"Agent error: {exc}")
 
+    # 4. Persist case to Supabase
+    try:
+        case = persist_case(
+            alert_id=alert_id,
+            parsed=triage_result["parsed"],
+            enrichment=triage_result["enrichment"],
+            impact_level=triage_result["impact_level"],
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"Case persistence error: {exc}")
+
+    # 5. Update alert status to closed (primary investigation complete)
+    client.table("alerts").update({"status": "closed"}).eq("id", alert_id).execute()
+
     return {
         "alert_id": alert_id,
         "source_alert_id": alert.get("source_alert_id"),
-        "session_id": triage_result["session_id"],
+        "case_id": case["id"],
+        "verdict": case["primary_verdict"],
+        "confidence": case["primary_confidence"],
+        "attack_technique": case.get("attack_technique"),
+        "impact_level": case["impact_level"],
+        "reasoning": case.get("reasoning", ""),
+        "self_audit": case.get("self_audit", ""),
         "agent_response": triage_result["agent_response"],
         "enrichment": triage_result["enrichment"],
+        "session_id": triage_result["session_id"],
     }
