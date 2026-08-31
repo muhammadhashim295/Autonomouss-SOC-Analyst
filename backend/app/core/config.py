@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     qoder_pat: Optional[str] = None
     qoder_primary_agent_id: Optional[str] = None
     qoder_primary_env_id: Optional[str] = None
+    qoder_secondary_agent_id: Optional[str] = None
+    qoder_secondary_env_id: Optional[str] = None
     qoder_api_base: str = "https://api.qoder.com/api/v1/cloud"
 
     # ── CORS ──────────────────────────────────────────────────────────

@@ -57,15 +57,27 @@ class QoderClient:
     ) -> dict[str, Any]:
         """Create a new session bound to an agent and environment.
 
+        Defaults to the Primary Agent.  Pass ``agent="secondary"`` or
+        explicit IDs to target the Secondary Agent.
+
         Returns the full session object including ``id``.
         """
-        agent = agent_id or settings.qoder_primary_agent_id
-        env = environment_id or settings.qoder_primary_env_id
+        if agent_id == "secondary":
+            agent_id = None
+            environment_id = environment_id or "secondary"
+
+        if environment_id == "secondary":
+            env = settings.qoder_secondary_env_id
+            agent = agent_id or settings.qoder_secondary_agent_id
+        else:
+            agent = agent_id or settings.qoder_primary_agent_id
+            env = environment_id or settings.qoder_primary_env_id
 
         if not agent or not env:
             raise QoderClientError(
                 "Agent ID and Environment ID are required. "
-                "Set QODER_PRIMARY_AGENT_ID and QODER_PRIMARY_ENV_ID in .env"
+                "Set QODER_PRIMARY_AGENT_ID/QODER_PRIMARY_ENV_ID and "
+                "QODER_SECONDARY_AGENT_ID/QODER_SECONDARY_ENV_ID in .env"
             )
 
         resp = self._session.post(
@@ -246,6 +258,145 @@ class QoderClient:
             "impact_level": impact_level,
             "similar_cases": similar_cases,
         }
+
+    def reinvestigate_alert(
+        self,
+        alert_payload: dict[str, Any],
+        primary_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Secondary agent re-investigation flow (Phase 8).
+
+        Sends the alert plus the Primary Agent's full investigation
+        output to the Deep Investigation Agent, which independently
+        re-derives the evidence and agrees/disagrees.
+
+        Parameters
+        ----------
+        alert_payload : dict
+            The alert row from the ``alerts`` table.
+        primary_result : dict
+            The Primary Agent's triage result — must contain
+            ``agent_response`` (and optionally ``parsed``, ``enrichment``).
+
+        Returns a dict with session_id, agent_response, parsed fields,
+        and the secondary verdict.
+        """
+        from app.services.investigation import parse_agent_response
+        from app.services.skills import (
+            correlate_logs,
+            detect_deviation,
+            enrich_iocs,
+            map_attack_techniques,
+        )
+
+        alert_type = alert_payload.get("alert_type", "unknown")
+        payload = alert_payload.get("raw_payload", {})
+
+        # Re-run all 4 skills so the secondary agent gets FRESH evidence
+        # to re-derive independently (not the primary's cached copy).
+        enrichment = {
+            "otx_enrichment": enrich_iocs(payload),
+            "attack_mapping": map_attack_techniques(alert_type, payload),
+            "log_correlation": correlate_logs(alert_type, payload),
+            "behavioral_deviation": detect_deviation(alert_type, payload),
+        }
+
+        # Create session bound to the Secondary Agent
+        session = self.create_session(agent_id="secondary")
+        session_id = session.get("id", session.get("session_id", ""))
+        if not session_id:
+            raise QoderClientError(f"No session ID in response: {session}")
+
+        # Build the re-investigation prompt
+        prompt = self._build_reinvestigation_prompt(
+            alert_payload, alert_type, payload,
+            enrichment, primary_result,
+        )
+
+        # Send message and collect response
+        self.send_message(session_id, prompt)
+        response_text = self.stream_response(session_id)
+
+        # Parse the secondary agent's response
+        parsed = parse_agent_response(response_text)
+
+        return {
+            "session_id": session_id,
+            "agent_response": response_text,
+            "parsed": parsed,
+            "enrichment": enrichment,
+        }
+
+    def _build_reinvestigation_prompt(
+        self,
+        alert_payload: dict[str, Any],
+        alert_type: str,
+        payload: dict[str, Any],
+        enrichment: dict[str, Any],
+        primary_result: dict[str, Any],
+    ) -> str:
+        """Build the re-investigation prompt for the Secondary Agent.
+
+        The prompt includes:
+        - The original alert data
+        - Freshly re-computed skill results (the secondary re-derives)
+        - The Primary Agent's full investigation report
+        - Requirements to agree/disagree with independent evidence
+        """
+        primary_response = primary_result.get("agent_response", "")
+        primary_parsed = primary_result.get("parsed", {})
+
+        otx = enrichment["otx_enrichment"]
+        attack = enrichment["attack_mapping"]
+        log_corr = enrichment["log_correlation"]
+        deviation = enrichment["behavioral_deviation"]
+
+        primary_summary = (
+            f"- Verdict: {primary_parsed.get('verdict', 'unknown')}\n"
+            f"- Confidence: {primary_parsed.get('confidence', 'unknown')}\n"
+            f"- ATT&CK technique: {primary_parsed.get('attack_technique', 'none')}\n"
+        )
+
+        prompt = (
+            "Re-investigate the following security alert. The Primary Alert "
+            "Triage Agent has already investigated it and produced a verdict. "
+            "Your job is to INDEPENDENTLY re-derive the evidence and then "
+            "agree or disagree with the primary's conclusion. Do NOT simply "
+            "trust the primary's analysis.\n\n"
+            "## Alert Data\n"
+            f"**Alert ID:** {alert_payload.get('source_alert_id', 'unknown')}\n"
+            f"**Alert Type:** {alert_type}\n"
+            f"**Raw Payload:**\n```json\n"
+            f"{json.dumps(payload, indent=2)}\n```\n\n"
+            "## Fresh Investigation Skills Results (re-computed for you)\n"
+            "Use these to re-derive your OWN findings. Cite them specifically "
+            "in your reasoning — do not copy the primary's interpretation.\n\n"
+            f"### OTX IOC Enrichment\n{json.dumps(otx, indent=2)}\n\n"
+            f"### ATT&CK Mapping\n{json.dumps(attack, indent=2)}\n\n"
+            f"### Log Correlation\n{json.dumps(log_corr, indent=2)}\n\n"
+            f"### Behavioral Deviation\n{json.dumps(deviation, indent=2)}\n\n"
+            "## Primary Agent's Investigation Report\n"
+            "This is the output you are cross-checking:\n\n"
+            f"**Summary:**\n{primary_summary}\n"
+            f"**Full Report:**\n```\n{primary_response}\n```\n\n"
+            "## Required Output Format\n"
+            "You MUST structure your response EXACTLY as follows:\n\n"
+            "**Secondary Verdict:** agree | disagree | false_positive | true_positive\n\n"
+            "**Confidence:** a number between 0.0 and 1.0\n\n"
+            "**Reasoning:**\n"
+            "Write 3-6 sentences. Cite YOUR OWN evidence from the skills "
+            "results above, then explicitly compare your findings to the "
+            "primary's. If you disagree, state precisely where the primary "
+            "went wrong.\n\n"
+            "**Impact Level:** standard | high_impact\n\n"
+            "**Recommended Action:**\n"
+            "Name the specific action that should be taken (or 'none').\n\n"
+            "**Self-Audit:**\n"
+            "What could make your re-investigation verdict wrong? Be honest "
+            "about gaps."
+        )
+
+        return prompt
 
     def _build_investigation_prompt(
         self,

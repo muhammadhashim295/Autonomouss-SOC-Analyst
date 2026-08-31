@@ -43,6 +43,7 @@ def parse_agent_response(text: str) -> dict[str, Any]:
         "reasoning": "",
         "self_audit": "",
         "attack_technique": None,
+        "secondary_verdict": None,
     }
 
     if not text:
@@ -107,6 +108,28 @@ def parse_agent_response(text: str) -> dict[str, Any]:
         # Take the last match (likely from the agent's actual analysis,
         # not from the prompt's skill output section)
         result["attack_technique"] = attack_matches[-1]
+
+    # ── Secondary verdict (agree/disagree — Phase 8+) ───────────────────
+    # Extracted BEFORE regular verdict so a "Secondary Verdict" line does
+    # not shadow the primary-verdict regex (which only matches FP/TP words).
+    secondary = re.findall(
+        r"\*\*Secondary\s*Verdict:?[\*]*\s*[:\-]?\s*"
+        r"(false_positive|true_positive|agree|disagree)",
+        text,
+        re.IGNORECASE,
+    )
+    result["secondary_verdict"] = secondary[-1].lower() if secondary else None
+
+    # ── Impact level (Phase 8+ secondary reports) ───────────────────────
+    impact = re.findall(
+        r"\*\*Impact\s*Level:?[\*]*\s*[:\-]?\s*(standard|high[_\-\s]?impact)",
+        text,
+        re.IGNORECASE,
+    )
+    if impact:
+        result["impact_level"] = impact[-1].lower().replace(" ", "_").replace("-", "_")
+    else:
+        result["impact_level"] = None
 
     # ── Reasoning (between Reasoning/Evidence and Self-Audit sections) ────
     # Patterns handle both **Key:** (colon inside) and **Key**: (outside).

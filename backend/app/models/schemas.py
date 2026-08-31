@@ -119,3 +119,18 @@ class HealthResponse(BaseModel):
     supabase_url: str
     alerts_count: Optional[int] = None
     error: Optional[str] = None
+
+
+# ── secondary re-investigation (Phase 8) ──────────────────────────────────────
+
+
+class ReinvestigateRequest(BaseModel):
+    """Optional body for POST /alerts/{id}/reinvestigate.
+
+    If ``primary_report`` is omitted, the endpoint runs the Primary Agent
+    first, then feeds its output to the Secondary Agent.
+    """
+
+    primary_report: Optional[str] = None
+    primary_verdict: Optional[str] = None
+    primary_confidence: Optional[float] = None

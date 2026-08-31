@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.core.firewall import check_alert, sanitize_snippet
 from app.db.supabase_client import get_supabase
-from app.models.schemas import AlertCreate, AlertResponse
+from app.models.schemas import AlertCreate, AlertResponse, ReinvestigateRequest
 from app.services.investigation import persist_case
 from app.services.qoder_client import QoderClientError, get_qoder_client
 from app.services.skills import (
@@ -188,3 +188,129 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
         "enrichment": triage_result["enrichment"],
         "session_id": triage_result["session_id"],
     }
+
+
+@router.post("/{alert_id}/reinvestigate")
+async def reinvestigate_alert(
+    alert_id: str,
+    request: ReinvestigateRequest | None = None,
+) -> dict[str, Any]:
+    """Trigger the Secondary Agent to independently re-investigate an alert.
+
+    Phase 8 dual-agent cross-check flow:
+    1. Looks up the alert
+    2. Obtains the Primary Agent's report — either from the request body,
+       or by running the Primary Agent first
+    3. Sends alert + primary's report to the Deep Investigation Agent,
+       which re-derives the evidence independently
+    4. Updates the existing case with the secondary verdict
+    5. Returns both agents' results
+    """
+    client = get_supabase()
+
+    # 1. Look up the alert
+    result = client.table("alerts").select("*").eq("id", alert_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    alert = result.data[0]
+    qoder = get_qoder_client()
+
+    # 2. Obtain the primary agent's investigation result
+    primary_ran_now = False
+    if request and request.primary_report:
+        # Primary report supplied by the caller (e.g. chained after /triage)
+        primary_result: dict[str, Any] = {
+            "agent_response": request.primary_report,
+            "parsed": {
+                "verdict": request.primary_verdict or "unknown",
+                "confidence": request.primary_confidence or 0.5,
+            },
+        }
+        case = _get_or_create_case(client, alert_id, alert, primary_result)
+    else:
+        # No report supplied — run the Primary Agent first
+        try:
+            client.table("alerts").update({"status": "in_review"}).eq("id", alert_id).execute()
+            primary_result = qoder.triage_alert(alert)
+            primary_ran_now = True
+        except QoderClientError as exc:
+            client.table("alerts").update({"status": "pending"}).eq("id", alert_id).execute()
+            raise HTTPException(status_code=502, detail=f"Primary agent error: {exc}")
+
+        try:
+            case = persist_case(
+                alert_id=alert_id,
+                parsed=primary_result["parsed"],
+                enrichment=primary_result["enrichment"],
+                impact_level=primary_result["impact_level"],
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=f"Case persistence error: {exc}")
+
+    # 3. Run the Secondary Agent's independent re-investigation
+    try:
+        secondary_result = qoder.reinvestigate_alert(alert, primary_result)
+    except QoderClientError as exc:
+        raise HTTPException(status_code=502, detail=f"Secondary agent error: {exc}")
+
+    # 4. Update the case with the secondary verdict
+    secondary_verdict = secondary_result["parsed"].get("secondary_verdict")
+    update_fields: dict[str, Any] = {}
+    if secondary_verdict:
+        update_fields["secondary_verdict"] = secondary_verdict
+    if update_fields:
+        client.table("cases").update(update_fields).eq("id", case["id"]).execute()
+
+    # 5. Return both agents' results
+    return {
+        "alert_id": alert_id,
+        "source_alert_id": alert.get("source_alert_id"),
+        "case_id": case["id"],
+        "primary_ran_now": primary_ran_now,
+        "primary": {
+            "verdict": primary_result["parsed"].get("verdict"),
+            "confidence": primary_result["parsed"].get("confidence"),
+            "agent_response": primary_result["agent_response"],
+        },
+        "secondary": {
+            "verdict": secondary_verdict,
+            "confidence": secondary_result["parsed"].get("confidence"),
+            "impact_level": secondary_result["parsed"].get("impact_level"),
+            "reasoning": secondary_result["parsed"].get("reasoning", ""),
+            "self_audit": secondary_result["parsed"].get("self_audit", ""),
+            "agent_response": secondary_result["agent_response"],
+            "session_id": secondary_result["session_id"],
+        },
+        "secondary_verdict": secondary_verdict,
+    }
+
+
+def _get_or_create_case(
+    client: Any,
+    alert_id: str,
+    alert: dict[str, Any],
+    primary_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the existing case for an alert, or create one from the
+    primary result if none exists yet."""
+    existing = (
+        client.table("cases")
+        .select("*")
+        .eq("alert_id", alert_id)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return existing.data[0]
+
+    from app.services.investigation import classify_impact
+
+    return persist_case(
+        alert_id=alert_id,
+        parsed=primary_result["parsed"],
+        enrichment=primary_result.get("enrichment", {}),
+        impact_level=classify_impact(
+            alert.get("alert_type", "unknown"), alert.get("raw_payload", {})
+        ),
+    )
