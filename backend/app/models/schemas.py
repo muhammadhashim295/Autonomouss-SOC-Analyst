@@ -1,0 +1,121 @@
+"""Pydantic models matching the four Supabase tables (design.md schema).
+
+These are used for request/response validation in later phases.  Field names
+and types mirror the SQL migration exactly.
+"""
+
+from datetime import datetime
+from typing import Any, Optional
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+from app.models.enums import (
+    ActionStatus,
+    AlertStatus,
+    AnalystDecision,
+    CaseMode,
+    ImpactLevel,
+    SecondaryVerdict,
+    Verdict,
+)
+
+
+# ── alerts ────────────────────────────────────────────────────────────────────
+
+
+class AlertBase(BaseModel):
+    source_alert_id: str
+    alert_type: str
+    raw_payload: dict[str, Any]
+    status: AlertStatus = AlertStatus.pending
+
+
+class AlertCreate(AlertBase):
+    """Payload for inserting a new alert."""
+
+
+class AlertResponse(AlertBase):
+    id: UUID
+    received_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── cases ─────────────────────────────────────────────────────────────────────
+
+
+class CaseBase(BaseModel):
+    alert_id: UUID
+    mode: CaseMode
+    primary_verdict: Verdict
+    primary_confidence: float = Field(ge=0.0, le=1.0)
+    secondary_verdict: Optional[SecondaryVerdict] = None
+    attack_technique: Optional[str] = None
+    impact_level: ImpactLevel
+    action_taken: Optional[str] = None
+    action_status: ActionStatus = ActionStatus.none
+    qoder_memory_record_id: Optional[str] = None
+
+
+class CaseCreate(CaseBase):
+    """Payload for inserting a new case."""
+
+
+class CaseResponse(CaseBase):
+    id: UUID
+    closed_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ── analyst_overrides ─────────────────────────────────────────────────────────
+
+
+class AnalystOverrideBase(BaseModel):
+    case_id: UUID
+    original_suggestion: str
+    analyst_decision: AnalystDecision
+    analyst_action: Optional[str] = None
+    analyst_reasoning: Optional[str] = None
+
+
+class AnalystOverrideCreate(AnalystOverrideBase):
+    """Payload for logging an analyst override."""
+
+
+class AnalystOverrideResponse(AnalystOverrideBase):
+    id: UUID
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── firewall_flags ────────────────────────────────────────────────────────────
+
+
+class FirewallFlagBase(BaseModel):
+    alert_id: UUID
+    flag_reason: str
+    raw_snippet: Optional[str] = None
+
+
+class FirewallFlagCreate(FirewallFlagBase):
+    """Payload for recording a firewall flag."""
+
+
+class FirewallFlagResponse(FirewallFlagBase):
+    id: UUID
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── health check ──────────────────────────────────────────────────────────────
+
+
+class HealthResponse(BaseModel):
+    status: str
+    supabase_url: str
+    alerts_count: Optional[int] = None
+    error: Optional[str] = None

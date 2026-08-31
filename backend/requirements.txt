@@ -1,0 +1,10 @@
+# Autonomous SOC Analyst Framework — backend dependencies
+# Pin minimum versions; run `pip install -r requirements.txt` inside a venv.
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+supabase>=2.7.0
+pydantic-settings>=2.4.0
+python-dotenv>=1.0.1
+requests>=2.31.0
+google-genai>=1.0.0
