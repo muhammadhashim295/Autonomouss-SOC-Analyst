@@ -286,9 +286,14 @@ def persist_case(
     """
     supabase = get_supabase()
 
+    # Phase 12: snapshot the CURRENT global mode onto the case — the case
+    # records the mode under which it was investigated.  get_mode is
+    # fail-safe (defaults to 'agentic' if the store is unreachable).
+    from app.services.settings_store import get_mode
+
     case_row = {
         "alert_id": alert_id,
-        "mode": "agentic",  # Default mode; Phase 12 adds the toggle
+        "mode": get_mode(),
         "primary_verdict": parsed["verdict"],
         "primary_confidence": parsed["confidence"],
         "attack_technique": parsed.get("attack_technique"),

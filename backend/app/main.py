@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.alerts import router as alerts_router
 from app.api.routes.generate import router as generate_router
+from app.api.routes.settings import router as settings_router
 from app.core.config import settings
 from app.db.supabase_client import get_supabase
 from app.models.schemas import HealthResponse
@@ -37,6 +38,7 @@ app.add_middleware(
 # Generate router must come before alerts router to avoid path-prefix conflicts
 app.include_router(generate_router)
 app.include_router(alerts_router)
+app.include_router(settings_router)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
