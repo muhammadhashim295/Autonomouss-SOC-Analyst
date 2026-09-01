@@ -390,6 +390,21 @@ def decide_and_execute_action(
 
     supabase.table("cases").update(update_fields).eq("id", case["id"]).execute()
 
+    # Phase 11: write the structured memory record on case close.
+    # Must never break the closing flow — failures are logged, not raised.
+    memory_record_id = None
+    if case_closed:
+        from app.services.memory_store import write_case_record
+
+        memory_record_id = write_case_record(
+            alert=alert,
+            case={**case, "action_status": decision["action_status"]},
+            primary_parsed=primary_parsed,
+            enrichment=enrichment,
+            action_record=record if record["action"] else None,
+            secondary_parsed=secondary_parsed,
+        )
+
     # Alert status mirrors the case state
     alert_status = "closed" if case_closed else "in_review"
     supabase.table("alerts").update({"status": alert_status}).eq(
@@ -410,4 +425,5 @@ def decide_and_execute_action(
         "record": record,
         "case_closed": case_closed,
         "alert_status": alert_status,
+        "memory_record_id": memory_record_id,
     }

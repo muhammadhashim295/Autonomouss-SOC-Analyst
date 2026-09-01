@@ -287,6 +287,7 @@ async def reinvestigate_alert(
             "verdict": primary_result["parsed"].get("verdict"),
             "confidence": primary_result["parsed"].get("confidence"),
             "agent_response": primary_result["agent_response"],
+            "similar_cases": primary_result.get("similar_cases", []),
         },
         "secondary": {
             "verdict": secondary_verdict,
@@ -296,6 +297,7 @@ async def reinvestigate_alert(
             "self_audit": secondary_result["parsed"].get("self_audit", ""),
             "agent_response": secondary_result["agent_response"],
             "session_id": secondary_result["session_id"],
+            "similar_cases": secondary_result.get("similar_cases", []),
         },
         "secondary_verdict": secondary_verdict,
         "action": {
@@ -308,6 +310,7 @@ async def reinvestigate_alert(
             "record": action_outcome["record"],
             "case_closed": action_outcome["case_closed"],
             "alert_status": action_outcome["alert_status"],
+            "memory_record_id": action_outcome.get("memory_record_id"),
         },
     }
 

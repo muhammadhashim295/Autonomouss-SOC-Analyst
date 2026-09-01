@@ -231,8 +231,12 @@ class QoderClient:
         alert_type = alert_payload.get("alert_type", "unknown")
         payload = alert_payload.get("raw_payload", {})
 
-        # 1. Retrieve similar past cases (Phase 11 stub)
-        similar_cases = retrieve_similar_cases(alert_type, payload)
+        # 1. Retrieve similar past cases (Phase 11 memory store)
+        similar_cases = retrieve_similar_cases(
+            alert_type,
+            payload,
+            exclude_source_alert_id=alert_payload.get("source_alert_id"),
+        )
 
         # 2. Run all 4 investigation skills
         otx = enrich_iocs(payload)
@@ -300,7 +304,10 @@ class QoderClient:
         Returns a dict with session_id, agent_response, parsed fields,
         and the secondary verdict.
         """
-        from app.services.investigation import parse_agent_response
+        from app.services.investigation import (
+            parse_agent_response,
+            retrieve_similar_cases,
+        )
         from app.services.skills import (
             correlate_logs,
             detect_deviation,
@@ -310,6 +317,14 @@ class QoderClient:
 
         alert_type = alert_payload.get("alert_type", "unknown")
         payload = alert_payload.get("raw_payload", {})
+
+        # Retrieve similar past cases (Phase 11 — the secondary agent gets
+        # memory too: how were similar situations resolved before?)
+        similar_cases = retrieve_similar_cases(
+            alert_type,
+            payload,
+            exclude_source_alert_id=alert_payload.get("source_alert_id"),
+        )
 
         # Re-run all 4 skills so the secondary agent gets FRESH evidence
         # to re-derive independently (not the primary's cached copy).
@@ -329,7 +344,7 @@ class QoderClient:
         # Build the re-investigation prompt
         prompt = self._build_reinvestigation_prompt(
             alert_payload, alert_type, payload,
-            enrichment, primary_result,
+            enrichment, primary_result, similar_cases,
         )
 
         # Send message and collect response
@@ -344,6 +359,7 @@ class QoderClient:
             "agent_response": response_text,
             "parsed": parsed,
             "enrichment": enrichment,
+            "similar_cases": similar_cases,
         }
 
     def _build_reinvestigation_prompt(
@@ -353,12 +369,14 @@ class QoderClient:
         payload: dict[str, Any],
         enrichment: dict[str, Any],
         primary_result: dict[str, Any],
+        similar_cases: list[dict[str, Any]] | None = None,
     ) -> str:
         """Build the re-investigation prompt for the Secondary Agent.
 
         The prompt includes:
         - The original alert data
         - Freshly re-computed skill results (the secondary re-derives)
+        - Similar past cases from the memory store (Phase 11)
         - The Primary Agent's full investigation report
         - Requirements to agree/disagree with independent evidence
         """
@@ -375,6 +393,21 @@ class QoderClient:
             f"- Confidence: {primary_parsed.get('confidence', 'unknown')}\n"
             f"- ATT&CK technique: {primary_parsed.get('attack_technique', 'none')}\n"
         )
+
+        if similar_cases:
+            memory_section = (
+                f"## Similar Past Cases ({len(similar_cases)} found in memory)\n"
+                "Prior investigations the memory store matched to this alert. "
+                "Use them as context — e.g. correlated campaigns, previously "
+                "confirmed threats, or analyst corrections — but verify this "
+                "alert's own evidence independently.\n\n"
+                f"{json.dumps(similar_cases, indent=2)}\n\n"
+            )
+        else:
+            memory_section = (
+                "## Similar Past Cases\n"
+                "No similar past cases found in memory.\n\n"
+            )
 
         prompt = (
             "Re-investigate the following security alert. The Primary Alert "
@@ -394,6 +427,7 @@ class QoderClient:
             f"### ATT&CK Mapping\n{json.dumps(attack, indent=2)}\n\n"
             f"### Log Correlation\n{json.dumps(log_corr, indent=2)}\n\n"
             f"### Behavioral Deviation\n{json.dumps(deviation, indent=2)}\n\n"
+            f"{memory_section}"
             "## Primary Agent's Investigation Report\n"
             "This is the output you are cross-checking:\n\n"
             f"**Summary:**\n{primary_summary}\n"
@@ -406,7 +440,8 @@ class QoderClient:
             "Write 3-6 sentences. Cite YOUR OWN evidence from the skills "
             "results above, then explicitly compare your findings to the "
             "primary's. If you disagree, state precisely where the primary "
-            "went wrong.\n\n"
+            "went wrong. If a similar past case from memory is relevant, "
+            "reference it explicitly.\n\n"
             "**Impact Level:** standard | high_impact\n\n"
             "**Recommended Action:**\n"
             "Name the specific action that should be taken (or 'none').\n\n"
@@ -440,7 +475,11 @@ class QoderClient:
         # Memory context section
         if similar_cases:
             memory_section = (
-                f"## Similar Past Cases ({len(similar_cases)} found)\n"
+                f"## Similar Past Cases ({len(similar_cases)} found in memory)\n"
+                "Prior investigations the memory store matched to this alert. "
+                "If they are relevant — e.g. the same IOCs, hosts, or attack "
+                "pattern — reference them explicitly in your reasoning (by "
+                "source_alert_id) and factor them into your verdict.\n\n"
                 + json.dumps(similar_cases, indent=2)
             )
         else:

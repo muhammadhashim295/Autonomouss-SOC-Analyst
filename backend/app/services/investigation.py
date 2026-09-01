@@ -232,26 +232,31 @@ def classify_impact(alert_type: str, payload: dict[str, Any]) -> str:
     return "standard"
 
 
-# ── 3. Memory store stub ─────────────────────────────────────────────────────
+# ── 3. Memory store (Phase 11) ─────────────────────────────────────────────────
 
 
 def retrieve_similar_cases(
     alert_type: str,
     payload: dict[str, Any],
     limit: int = 3,
+    exclude_source_alert_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Retrieve similar past cases from the memory store.
 
-    .. todo::
-        Phase 11 — Wire this to the Qoder Memory Store.  For now,
-        returns an empty list.  The investigation prompt handles
-        the empty result gracefully ("no similar cases found").
+    Phase 11: implemented in :mod:`app.services.memory_store` — this is a
+    thin façade so existing imports keep working.  Records are scored by
+    shared IOCs, source IP, asset tags, and recency, with analyst
+    corrections boosted.  Returns [] on failure (investigation proceeds
+    without memory).
     """
-    # TODO: Phase 11 — Create Qoder Memory Store, attach to agent sessions.
-    # Query by alert_type + key payload fields (source_ip, alert_type,
-    # IOCs).  Return up to ``limit`` past case records.
-    # Analyst corrections should be retrieved with higher priority.
-    return []
+    from app.services.memory_store import retrieve_similar_cases as _retrieve
+
+    return _retrieve(
+        alert_type,
+        payload,
+        limit=limit,
+        exclude_source_alert_id=exclude_source_alert_id,
+    )
 
 
 # ── 4. Case persistence ──────────────────────────────────────────────────────
