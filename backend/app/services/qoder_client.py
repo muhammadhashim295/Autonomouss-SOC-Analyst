@@ -7,7 +7,7 @@ Wraps the three core endpoints:
 """
 
 import json
-from typing import Any
+from typing import Any, Iterator
 
 import requests
 
@@ -132,16 +132,28 @@ class QoderClient:
 
     # ── Streaming ─────────────────────────────────────────────────────────
 
-    def stream_response(self, session_id: str, timeout: int = 120) -> str:
-        """Subscribe to the SSE stream and collect the agent's full text reply.
+    def stream_session_events(
+        self, session_id: str, timeout: int = 120
+    ) -> Iterator[dict[str, Any]]:
+        """Subscribe to the session SSE stream and yield events as they land.
 
-        Blocks until the agent finishes (or ``timeout`` seconds elapse).
-        Returns the concatenated text from all ``agent.message`` events.
+        Generator variant of :meth:`stream_response` (Phase 14) — instead
+        of blocking and returning the full text, it yields each parsed
+        stream event the moment it arrives so callers can relay agent
+        reasoning live:
+
+        - ``{"type": "delta", "text": ...}`` — one per text block in an
+          ``agent.message`` event (the agent's reasoning, progressively)
+        - ``{"type": "status", "event": ..., "data": ...}`` — other
+          session events (status changes, tool activity)
+
+        Terminates when the session goes idle or the turn ends.  Raises
+        :class:`QoderClientError` on network failure — the same contract
+        as ``stream_response``.
         """
         url = f"{self._base}/sessions/{session_id}/events/stream"
         headers = {"Accept": "text/event-stream"}
 
-        collected_text: list[str] = []
         current_event_type: str | None = None
         try:
             with self._session.get(
@@ -175,11 +187,16 @@ class QoderClient:
                     except json.JSONDecodeError:
                         continue
 
-                    # Extract text from agent.message events
                     if current_event_type == "agent.message":
                         for block in event.get("content", []):
                             if block.get("type") == "text":
-                                collected_text.append(block["text"])
+                                yield {"type": "delta", "text": block["text"]}
+                    else:
+                        yield {
+                            "type": "status",
+                            "event": current_event_type,
+                            "data": event,
+                        }
 
                     # Stop when session goes idle (agent finished)
                     if current_event_type and "status_idle" in current_event_type:
@@ -198,7 +215,17 @@ class QoderClient:
                 f"Stream failed after {timeout}s: {exc}"
             ) from exc
 
-        return "".join(collected_text).strip()
+    def stream_response(self, session_id: str, timeout: int = 120) -> str:
+        """Subscribe to the SSE stream and collect the agent's full text reply.
+
+        Blocks until the agent finishes (or ``timeout`` seconds elapse).
+        Returns the concatenated text from all ``agent.message`` events.
+        """
+        parts: list[str] = []
+        for stream_event in self.stream_session_events(session_id, timeout):
+            if stream_event["type"] == "delta":
+                parts.append(stream_event["text"])
+        return "".join(parts).strip()
 
     # ── Convenience ───────────────────────────────────────────────────────
 
