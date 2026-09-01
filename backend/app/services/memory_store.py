@@ -70,8 +70,14 @@ def write_case_record(
     enrichment: Optional[dict[str, Any]],
     action_record: Optional[dict[str, Any]],
     secondary_parsed: Optional[dict[str, Any]] = None,
+    record_type: str = "case",
+    analyst_correction: Optional[str] = None,
 ) -> Optional[str]:
     """Write a structured memory record for a closing case.
+
+    ``record_type='correction'`` (Phase 13) marks an analyst override —
+    these are retrieved with higher priority for similar future alerts
+    (design.md).  ``analyst_correction`` carries what changed and why.
 
     Returns the new record's id (also persisted to
     ``cases.qoder_memory_record_id``), or ``None`` on failure — a memory
@@ -90,7 +96,7 @@ def write_case_record(
         }
 
     record = {
-        "record_type": "case",
+        "record_type": record_type,
         "alert_id": alert.get("id"),
         "case_id": case.get("id"),
         "source_alert_id": alert.get("source_alert_id", "unknown"),
@@ -103,7 +109,7 @@ def write_case_record(
         "reasoning": (primary_parsed.get("reasoning") or "")[:2000],
         "response_taken": action_record,
         "mode": case.get("mode", "agentic"),
-        "analyst_correction": None,  # Phase 13 — analyst decision handling
+        "analyst_correction": analyst_correction,
         "iocs": ioc_keys,
         "source_ip": payload.get("source_ip"),
         "asset_tags": _as_list(payload.get("asset_tags")),
@@ -169,7 +175,7 @@ def _score_record(record: dict[str, Any], payload: dict[str, Any]) -> int:
 def _format_for_prompt(record: dict[str, Any], score: int) -> dict[str, Any]:
     """Render a memory record compactly for the agent prompt."""
     response = record.get("response_taken") or {}
-    return {
+    formatted = {
         "source_alert_id": record.get("source_alert_id"),
         "alert_type": record.get("alert_type"),
         "record_type": record.get("record_type"),
@@ -184,6 +190,10 @@ def _format_for_prompt(record: dict[str, Any], score: int) -> dict[str, Any]:
         "closed": str(record.get("created_at", ""))[:19],
         "similarity_score": score,
     }
+    # Corrections carry the analyst's guidance — the learning signal
+    if record.get("analyst_correction"):
+        formatted["analyst_correction"] = record["analyst_correction"]
+    return formatted
 
 
 def retrieve_similar_cases(

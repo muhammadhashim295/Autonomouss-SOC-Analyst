@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.alerts import router as alerts_router
+from app.api.routes.cases import router as cases_router
 from app.api.routes.generate import router as generate_router
 from app.api.routes.settings import router as settings_router
 from app.core.config import settings
@@ -39,6 +40,7 @@ app.add_middleware(
 app.include_router(generate_router)
 app.include_router(alerts_router)
 app.include_router(settings_router)
+app.include_router(cases_router)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

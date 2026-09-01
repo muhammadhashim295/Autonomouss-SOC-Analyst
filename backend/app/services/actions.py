@@ -381,9 +381,26 @@ def decide_and_execute_action(
     # fully resolved (executed or no action needed); it stays open while a
     # human decision is pending.
     case_closed = decision["action_status"] in ("executed", "none")
+
+    # Phase 13: snapshot the full investigation onto the case — the
+    # deferred memory write at analyst-decision time (and the Phase 15
+    # case-detail screen) need the parsed output + enrichment later.
+    investigation_snapshot = {
+        "primary_parsed": {
+            k: primary_parsed.get(k)
+            for k in ("verdict", "confidence", "reasoning", "self_audit", "attack_technique")
+        },
+        "secondary_parsed": {
+            k: secondary_parsed.get(k)
+            for k in ("secondary_verdict", "confidence", "reasoning", "self_audit", "impact_level")
+        },
+        "enrichment": enrichment,
+    }
+
     update_fields: dict[str, Any] = {
         "action_status": decision["action_status"],
         "action_taken": json.dumps(record, indent=2) if record["action"] else None,
+        "investigation_snapshot": investigation_snapshot,
     }
     if case_closed:
         update_fields["closed_at"] = datetime.now(timezone.utc).isoformat()
