@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     qoder_secondary_env_id: Optional[str] = None
     qoder_api_base: str = "https://api.qoder.com/api/v1/cloud"
 
+    # ── Action execution (Phase 10) ────────────────────────────────────
+    # Minimum cross-checked confidence before the secondary agent may
+    # execute a standard action autonomously in agentic mode.
+    action_confidence_threshold: float = 0.7
+
     # ── CORS ──────────────────────────────────────────────────────────
     cors_origins: str = "http://localhost:5173"
 

@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.core.firewall import check_alert, sanitize_snippet
 from app.db.supabase_client import get_supabase
 from app.models.schemas import AlertCreate, AlertResponse, ReinvestigateRequest
+from app.services.actions import decide_and_execute_action
 from app.services.investigation import persist_case
 from app.services.qoder_client import QoderClientError, get_qoder_client
 from app.services.skills import (
@@ -197,14 +198,17 @@ async def reinvestigate_alert(
 ) -> dict[str, Any]:
     """Trigger the Secondary Agent to independently re-investigate an alert.
 
-    Phase 8 dual-agent cross-check flow:
+    Phase 8 dual-agent cross-check flow + Phase 10 action pipeline:
     1. Looks up the alert
     2. Obtains the Primary Agent's report — either from the request body,
        or by running the Primary Agent first
     3. Sends alert + primary's report to the Deep Investigation Agent,
        which re-derives the evidence independently
     4. Updates the existing case with the secondary verdict
-    5. Returns both agents' results
+    5. Decides and (if allowed) executes the response action — enforced
+       logic: standard actions execute autonomously in agentic mode when
+       confident, high-impact actions always await analyst approval
+    6. Returns both agents' results plus the action outcome
     """
     client = get_supabase()
 
@@ -262,7 +266,18 @@ async def reinvestigate_alert(
     if update_fields:
         client.table("cases").update(update_fields).eq("id", case["id"]).execute()
 
-    # 5. Return both agents' results
+    # 5. Phase 10 action pipeline — decide + execute (simulated) the action
+    #    based on the cross-checked verdict.  Enforced logic in
+    #    app/services/actions.py, never LLM discretion.
+    action_outcome = decide_and_execute_action(
+        alert=alert,
+        case=case,
+        primary_parsed=primary_result["parsed"],
+        secondary_parsed=secondary_result["parsed"],
+        enrichment=secondary_result.get("enrichment"),
+    )
+
+    # 6. Return both agents' results + the action outcome
     return {
         "alert_id": alert_id,
         "source_alert_id": alert.get("source_alert_id"),
@@ -283,6 +298,17 @@ async def reinvestigate_alert(
             "session_id": secondary_result["session_id"],
         },
         "secondary_verdict": secondary_verdict,
+        "action": {
+            "action_id": action_outcome["decision"]["action_id"],
+            "action_class": action_outcome["decision"]["action_class"],
+            "action_status": action_outcome["decision"]["action_status"],
+            "target": action_outcome["decision"].get("target"),
+            "rationale": action_outcome["decision"].get("rationale"),
+            "executed": action_outcome["decision"]["execute"],
+            "record": action_outcome["record"],
+            "case_closed": action_outcome["case_closed"],
+            "alert_status": action_outcome["alert_status"],
+        },
     }
 
 
