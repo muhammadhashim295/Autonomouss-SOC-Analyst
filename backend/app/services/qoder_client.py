@@ -80,16 +80,24 @@ class QoderClient:
                 "QODER_SECONDARY_AGENT_ID/QODER_SECONDARY_ENV_ID in .env"
             )
 
-        resp = self._session.post(
-            f"{self._base}/sessions",
-            json={"agent": agent, "environment_id": env},
-            timeout=30,
-        )
+        try:
+            resp = self._session.post(
+                f"{self._base}/sessions",
+                json={"agent": agent, "environment_id": env},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise QoderClientError(f"Session creation request failed: {exc}") from exc
         if resp.status_code not in (200, 201):
             raise QoderClientError(
                 f"Failed to create session: {resp.status_code} {resp.text}"
             )
-        return resp.json()
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise QoderClientError(
+                f"Session creation returned non-JSON body: {resp.text[:200]}"
+            ) from exc
 
     # ── Messages ──────────────────────────────────────────────────────────
 
@@ -103,16 +111,24 @@ class QoderClient:
                 }
             ]
         }
-        resp = self._session.post(
-            f"{self._base}/sessions/{session_id}/events",
-            json=payload,
-            timeout=30,
-        )
+        try:
+            resp = self._session.post(
+                f"{self._base}/sessions/{session_id}/events",
+                json=payload,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise QoderClientError(f"Send-message request failed: {exc}") from exc
         if resp.status_code not in (200, 201, 202):
             raise QoderClientError(
                 f"Failed to send message: {resp.status_code} {resp.text}"
             )
-        return resp.json()
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise QoderClientError(
+                f"Send message returned non-JSON body: {resp.text[:200]}"
+            ) from exc
 
     # ── Streaming ─────────────────────────────────────────────────────────
 
@@ -174,10 +190,13 @@ class QoderClient:
                     if stop_reason.get("type") == "end_turn":
                         break
 
-        except requests.exceptions.Timeout:
+        except requests.RequestException as exc:
+            # Covers timeouts, dropped connections, and chunked-encoding
+            # errors mid-stream — all surface as clean QoderClientErrors
+            # instead of unhandled 500s.
             raise QoderClientError(
-                f"Stream timed out after {timeout}s"
-            )
+                f"Stream failed after {timeout}s: {exc}"
+            ) from exc
 
         return "".join(collected_text).strip()
 
