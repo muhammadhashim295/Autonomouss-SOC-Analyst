@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useReducer } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import FlowDiagram from '../components/FlowDiagram'
+import FlowChart from '../components/FlowChart'
 import AgentPanel from '../components/AgentPanel'
 import AlertCard from '../components/AlertCard'
 import LiveStatsBar from '../components/LiveStatsBar'
@@ -368,10 +368,13 @@ export default function Orchestration() {
                 )}
               </div>
 
-              {/* Flow Diagram */}
-              <FlowDiagram
+              {/* Workflow Flowchart */}
+              <FlowChart
                 stages={focusedStream.stages}
                 firewallFlags={focusedStream.firewallFlags}
+                primaryData={focusedStream.primary}
+                secondaryData={focusedStream.secondary}
+                caseResult={focusedStream.caseResult}
               />
 
               {/* Stage Details: Investigation, Enrichment, Firewall */}
