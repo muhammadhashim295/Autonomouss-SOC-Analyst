@@ -1,12 +1,24 @@
 /**
  * Alert queue item card.
- * Shows alert type, source ID, status, and firewall flag indicator.
+ * Shows alert type, source ID, status, firewall flag indicator,
+ * and current pipeline stage for streaming alerts.
  */
-export default function AlertCard({ alert, isSelected, isStreaming, firewallFlagged, onClick }) {
+export default function AlertCard({ alert, isSelected, isStreaming, firewallFlagged, streamStage, onClick }) {
   const statusColor = {
     pending: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30',
     in_review: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/30',
     closed: 'text-slate-400 bg-slate-800/50 border-slate-700/30',
+  }
+
+  const stageLabels = {
+    liveEnv: 'Starting',
+    investigation: 'Memory',
+    enrichment: 'Enriching',
+    firewall: 'Firewall',
+    primary: 'Primary Agent',
+    secondary: 'Secondary Agent',
+    action: 'Action',
+    db: 'Complete',
   }
 
   return (
@@ -16,7 +28,7 @@ export default function AlertCard({ alert, isSelected, isStreaming, firewallFlag
         isSelected
           ? 'border-emerald-500/50 bg-emerald-950/20 glow-green'
           : isStreaming
-          ? 'border-cyan-500/30 bg-cyan-950/10 animate-pulse-glow'
+          ? 'border-cyan-500/30 bg-cyan-950/10'
           : 'border-slate-800/50 bg-slate-900/30 hover:border-slate-700/50 hover:bg-slate-900/50'
       }`}
     >
@@ -37,6 +49,14 @@ export default function AlertCard({ alert, isSelected, isStreaming, firewallFlag
         </div>
       </div>
       <div className="text-xs text-slate-500 font-mono mt-1 truncate">{alert.alert_type}</div>
+
+      {/* Pipeline stage indicator for streaming alerts */}
+      {streamStage && (
+        <div className="flex items-center gap-1.5 mt-1.5">
+          <div className="w-1 h-1 rounded-full bg-cyan-400 animate-pulse" />
+          <span className="text-xs font-mono text-cyan-400/80">{stageLabels[streamStage] || streamStage}</span>
+        </div>
+      )}
     </div>
   )
 }

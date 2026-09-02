@@ -1,11 +1,10 @@
 import TypewriterText from './TypewriterText'
 
 /**
- * Live agent reasoning panel.
- * Shows thinking indicator during agent_status events,
- * then reveals full reasoning with typewriter animation on agent_delta.
+ * Live agent reasoning panel with structured when/where/why/how context
+ * and MITRE ATT&CK tactics display.
  */
-export default function AgentPanel({ name, status, reasoning, verdict, confidence, extra }) {
+export default function AgentPanel({ name, status, reasoning, verdict, confidence, extra, alertTime }) {
   const isActive = status === 'thinking' || status === 'running'
   const isDone = status === 'complete'
 
@@ -52,7 +51,7 @@ export default function AgentPanel({ name, status, reasoning, verdict, confidenc
               <div className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
               <div className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" style={{ animationDelay: '0.2s' }} />
               <div className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" style={{ animationDelay: '0.4s' }} />
-              <span className="text-yellow-400/70 font-mono text-sm ml-1">Analyzing</span>
+              <span className="text-yellow-400/70 font-mono text-sm ml-1">Analyzing evidence</span>
             </div>
             <div className="h-1 bg-slate-800 rounded overflow-hidden">
               <div className="h-full bg-yellow-500/50 rounded" style={{
@@ -63,21 +62,57 @@ export default function AgentPanel({ name, status, reasoning, verdict, confidenc
           </div>
         )}
 
-        {/* Reasoning with typewriter */}
+        {/* Reasoning */}
         {reasoning && (
           <div className="animate-fade-in">
-            <div className="text-sm text-slate-300 font-mono leading-relaxed whitespace-pre-wrap">
+            {/* When/Where/Why/How context bar */}
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 mb-3 pb-3 border-b border-slate-800/40">
+              <ContextItem label="WHEN" value={alertTime ? new Date(alertTime).toLocaleTimeString() : '—'} color="cyan" />
+              <ContextItem label="WHERE" value={extra?.source_ip || extra?.source || 'alert payload'} color="cyan" />
+              <ContextItem
+                label="WHY"
+                value={verdict === 'true_positive' ? 'Threat indicators confirmed' :
+                       verdict === 'false_positive' ? 'Insufficient threat evidence' :
+                       'Analysis in progress'}
+                color={verdict === 'true_positive' ? 'red' : verdict === 'false_positive' ? 'emerald' : 'yellow'}
+              />
+              <ContextItem
+                label="HOW"
+                value={extra?.attack_technique || 'Agent reasoning below'}
+                color="emerald"
+              />
+            </div>
+
+            {/* Full reasoning with typewriter */}
+            <div className="text-sm text-slate-300 font-mono leading-relaxed whitespace-pre-wrap max-h-[350px] overflow-y-auto">
               <TypewriterText text={reasoning} speed={6} />
             </div>
-            {/* Verdict info */}
+
+            {/* MITRE ATT&CK Tactics Bar */}
+            {isDone && extra?.attack_technique && (
+              <div className="mt-3 pt-3 border-t border-slate-800/40">
+                <div className="text-xs font-mono text-slate-500 mb-1.5">MITRE ATT&CK</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {parseAttackTechniques(extra.attack_technique).map((tech, i) => (
+                    <span key={i} className="px-2 py-0.5 rounded text-xs font-mono bg-red-500/15 text-red-400 border border-red-500/25">
+                      {tech}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Verdict metrics */}
             {isDone && confidence != null && (
-              <div className="mt-3 pt-3 border-t border-slate-800/50 flex flex-wrap gap-2">
+              <div className="mt-3 pt-3 border-t border-slate-800/40 flex flex-wrap gap-3">
                 <span className="text-xs font-mono text-slate-500">
                   Confidence: <span className="text-cyan-400">{(confidence * 100).toFixed(0)}%</span>
                 </span>
-                {extra?.attack_technique && (
+                {extra?.impact_level && (
                   <span className="text-xs font-mono text-slate-500">
-                    MITRE: <span className="text-emerald-400">{extra.attack_technique}</span>
+                    Impact: <span className={
+                      extra.impact_level === 'high_impact' ? 'text-red-400' : 'text-emerald-400'
+                    }>{extra.impact_level.replace('_', ' ').toUpperCase()}</span>
                   </span>
                 )}
                 {extra?.secondary_verdict && (
@@ -85,7 +120,7 @@ export default function AgentPanel({ name, status, reasoning, verdict, confidenc
                     2nd Verdict: <span className={
                       extra.secondary_verdict === 'agree' || extra.secondary_verdict === 'true_positive'
                         ? 'text-red-400' : 'text-emerald-400'
-                    }>{extra.secondary_verdict}</span>
+                    }>{extra.secondary_verdict.replace('_', ' ')}</span>
                   </span>
                 )}
               </div>
@@ -95,4 +130,29 @@ export default function AgentPanel({ name, status, reasoning, verdict, confidenc
       </div>
     </div>
   )
+}
+
+/* ── Helpers ── */
+
+function ContextItem({ label, value, color = 'slate' }) {
+  const colors = {
+    cyan: 'text-cyan-400',
+    emerald: 'text-emerald-400',
+    red: 'text-red-400',
+    yellow: 'text-yellow-400',
+    slate: 'text-slate-400',
+  }
+  return (
+    <div className="flex gap-1.5 text-xs font-mono">
+      <span className="text-slate-600 flex-shrink-0">{label}:</span>
+      <span className={`${colors[color]} truncate`} title={value}>{value}</span>
+    </div>
+  )
+}
+
+/** Parse attack_technique into individual IDs (handles "T1110.001, T1078" etc.) */
+function parseAttackTechniques(tech) {
+  if (!tech) return []
+  if (Array.isArray(tech)) return tech
+  return tech.split(/[,;]\s*/).filter(Boolean)
 }
