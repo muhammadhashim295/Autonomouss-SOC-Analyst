@@ -1,7 +1,7 @@
 /**
  * Top status bar showing live feed stats, active threats, and global agent mode toggle.
  */
-export default function LiveStatsBar({ feedStatus, stats, mode, onModeToggle, onStartPitchDemo, isPitchDemoActive }) {
+export default function LiveStatsBar({ feedStatus, stats, mode, onModeToggle }) {
   const isRunning = feedStatus === 'running'
 
   return (
@@ -50,27 +50,13 @@ export default function LiveStatsBar({ feedStatus, stats, mode, onModeToggle, on
         )}
       </div>
 
-      {/* Center: Pitch Demo Mode & System Identity */}
+      {/* Center: System Identity */}
       <div className="flex items-center gap-3">
-        {onStartPitchDemo && (
-          <button
-            onClick={onStartPitchDemo}
-            disabled={isPitchDemoActive}
-            className={`px-3 py-1 rounded-lg font-mono text-xs font-bold border transition-all duration-300 flex items-center gap-2 cursor-pointer ${
-              isPitchDemoActive
-                ? 'border-purple-500/60 bg-purple-500/25 text-purple-200 glow-purple animate-pulse cursor-not-allowed'
-                : 'border-cyan-500/40 bg-gradient-to-r from-cyan-500/20 to-purple-500/20 text-cyan-300 hover:border-cyan-400 hover:from-cyan-500/30 hover:to-purple-500/30 glow-cyan'
-            }`}
-          >
-            <span>🚀</span>
-            <span>{isPitchDemoActive ? 'PITCH DEMO RUNNING...' : 'PITCH DEMO MODE'}</span>
-          </button>
-        )}
-
         <span className="hidden xl:inline text-[11px] font-mono text-slate-500 uppercase tracking-widest">
-          Alibaba Cloud AI Hackathon 2026
+          Autonomous Cyber SOC Platform
         </span>
       </div>
+
 
       {/* Right: Global Agent Mode Switch */}
       <div className="flex items-center gap-3">
