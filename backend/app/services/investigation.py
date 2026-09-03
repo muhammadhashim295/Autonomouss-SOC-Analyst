@@ -49,6 +49,12 @@ def parse_agent_response(text: str) -> dict[str, Any]:
     if not text:
         return result
 
+    # Strip thinking scratchpad tags like <think>...</think> if present
+    cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    if cleaned_text:
+        text = cleaned_text
+
+
     # ── Verdict ───────────────────────────────────────────────────────────
     # Use findall + take LAST match to handle echoed prompts.
     # Match both **Verdict:** (colon inside bold) and **Verdict**: (outside).

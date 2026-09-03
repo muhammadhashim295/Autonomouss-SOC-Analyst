@@ -134,10 +134,22 @@ def apply_analyst_decision(
     case = case_rows.data[0]
 
     if case.get("action_status") not in _DECIDABLE_STATUSES:
+        if case.get("status") == "closed" or case.get("action_status") in ("executed", "redirected", "self_acted"):
+            logger.info("Case %s is already closed/executed (%s); returning existing record.", case_id, case.get("action_status"))
+            return {
+                "case_id": case_id,
+                "status": case.get("status", "closed"),
+                "action_status": case.get("action_status", "executed"),
+                "case": case,
+                "memory_record_id": case.get("qoder_memory_record_id"),
+                "memory_record_type": "decision",
+                "analyst_correction": None,
+            }
         raise DecisionError(
             f"Case {case_id} is not awaiting a decision "
             f"(action_status={case.get('action_status')})"
         )
+
 
     # 2. Load the alert + investigation snapshot (persisted at pipeline time)
     alert_rows = (

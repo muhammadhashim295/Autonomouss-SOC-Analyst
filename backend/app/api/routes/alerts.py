@@ -9,8 +9,11 @@ from app.core.firewall import check_alert, sanitize_snippet
 from app.db.supabase_client import get_supabase
 from app.models.schemas import AlertCreate, AlertResponse, ReinvestigateRequest
 from app.services.actions import decide_and_execute_action
+from app.services.agent_provider import get_agent_client
+from app.services.groq_client import GroqClientError
 from app.services.investigation import persist_case
-from app.services.qoder_client import QoderClientError, get_qoder_client
+from app.services.qoder_client import QoderClientError
+
 from app.services.skills import (
     correlate_logs,
     detect_deviation,
@@ -152,14 +155,15 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
     # 2. Update status to in_review
     client.table("alerts").update({"status": "in_review"}).eq("id", alert_id).execute()
 
-    # 3. Call Qoder agent (full investigation flow)
+    # 3. Call agent (resolved per AGENT_PROVIDER setting)
     try:
-        qoder = get_qoder_client()
-        triage_result = qoder.triage_alert(alert)
-    except QoderClientError as exc:
+        agent = get_agent_client()
+        triage_result = agent.triage_alert(alert)
+    except (QoderClientError, GroqClientError) as exc:
         # Revert status on failure
         client.table("alerts").update({"status": "pending"}).eq("id", alert_id).execute()
         raise HTTPException(status_code=502, detail=f"Agent error: {exc}")
+
 
     # 4. Persist case to Supabase
     try:
@@ -218,7 +222,7 @@ async def reinvestigate_alert(
         raise HTTPException(status_code=404, detail="Alert not found")
 
     alert = result.data[0]
-    qoder = get_qoder_client()
+    agent = get_agent_client()
 
     # 2. Obtain the primary agent's investigation result
     primary_ran_now = False
@@ -236,9 +240,9 @@ async def reinvestigate_alert(
         # No report supplied — run the Primary Agent first
         try:
             client.table("alerts").update({"status": "in_review"}).eq("id", alert_id).execute()
-            primary_result = qoder.triage_alert(alert)
+            primary_result = agent.triage_alert(alert)
             primary_ran_now = True
-        except QoderClientError as exc:
+        except (QoderClientError, GroqClientError) as exc:
             client.table("alerts").update({"status": "pending"}).eq("id", alert_id).execute()
             raise HTTPException(status_code=502, detail=f"Primary agent error: {exc}")
 
@@ -254,9 +258,10 @@ async def reinvestigate_alert(
 
     # 3. Run the Secondary Agent's independent re-investigation
     try:
-        secondary_result = qoder.reinvestigate_alert(alert, primary_result)
-    except QoderClientError as exc:
+        secondary_result = agent.reinvestigate_alert(alert, primary_result)
+    except (QoderClientError, GroqClientError) as exc:
         raise HTTPException(status_code=502, detail=f"Secondary agent error: {exc}")
+
 
     # 4. Update the case with the secondary verdict
     secondary_verdict = secondary_result["parsed"].get("secondary_verdict")

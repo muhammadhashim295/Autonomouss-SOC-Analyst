@@ -39,6 +39,20 @@ export async function getAlerts(limit = 50, status = null) {
   return res.json()
 }
 
+export async function ingestAlert(alertData) {
+  const res = await fetch(`${BASE}/alerts/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(alertData),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `Failed to ingest alert: ${res.status}`)
+  }
+  return res.json()
+}
+
+
 // ── Firewall Flags ──
 
 export async function getFirewallFlags(alertId) {
@@ -73,3 +87,21 @@ export async function getCase(caseId) {
   if (!res.ok) throw new Error(`Failed to get case: ${res.status}`)
   return res.json()
 }
+
+export async function submitAnalystDecision(caseId, { decision, analyst_action, analyst_reasoning }) {
+  const res = await fetch(`${BASE}/cases/${caseId}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      decision,
+      analyst_action,
+      analyst_reasoning,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `Failed to submit decision: ${res.status}`)
+  }
+  return res.json()
+}
+

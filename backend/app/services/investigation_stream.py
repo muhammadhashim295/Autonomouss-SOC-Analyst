@@ -31,19 +31,22 @@ from typing import Any, Iterator
 
 from app.db.supabase_client import get_supabase
 from app.services.actions import decide_and_execute_action
+from app.services.agent_provider import get_agent_client
+from app.services.groq_client import GroqClientError
 from app.services.investigation import (
     classify_impact,
     parse_agent_response,
     persist_case,
     retrieve_similar_cases,
 )
-from app.services.qoder_client import QoderClientError, get_qoder_client
+from app.services.qoder_client import QoderClientError
 from app.services.skills import (
     correlate_logs,
     detect_deviation,
     enrich_iocs,
     map_attack_techniques,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +73,7 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
     Exceptions propagate to the caller (the SSE layer converts them into
     an ``investigation_error`` event and reverts the alert).
     """
-    qoder = get_qoder_client()
+    agent = get_agent_client()
 
     alert_id = alert["id"]
     alert_type = alert.get("alert_type", "unknown")
@@ -82,6 +85,7 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
             "alert_id": alert_id,
             "source_alert_id": alert.get("source_alert_id"),
             "alert_type": alert_type,
+            "agent_provider": agent.provider_name,
         },
     }
 
@@ -107,22 +111,24 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
         },
     }
 
-    session = qoder.create_session()
+    session = agent.create_session()
     session_id = session.get("id", session.get("session_id", ""))
     if not session_id:
-        raise QoderClientError(f"No session ID in response: {session}")
+        raise (QoderClientError if agent.provider_name == "qoder" else GroqClientError)(
+            f"No session ID in response: {session}"
+        )
 
-    prompt = qoder._build_investigation_prompt(
+    prompt = agent._build_investigation_prompt(
         alert, alert_type, payload, enrichment, similar_cases
     )
-    qoder.send_message(session_id, prompt)
+    agent.send_message(session_id, prompt)
     yield {
         "event": "agent_started",
-        "data": {"agent": "primary", "session_id": session_id},
+        "data": {"agent": "primary", "session_id": session_id, "provider": agent.provider_name},
     }
 
     primary_parts: list[str] = []
-    for stream_event in qoder.stream_session_events(session_id):
+    for stream_event in agent.stream_session_events(session_id):
         if stream_event["type"] == "delta":
             primary_parts.append(stream_event["text"])
             yield {
@@ -191,22 +197,24 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
         "data": {"agent": "secondary", "enrichment": sec_enrichment},
     }
 
-    sec_session = qoder.create_session(agent_id="secondary")
+    sec_session = agent.create_session(agent_id="secondary")
     sec_session_id = sec_session.get("id", sec_session.get("session_id", ""))
     if not sec_session_id:
-        raise QoderClientError(f"No session ID in response: {sec_session}")
+        raise (QoderClientError if agent.provider_name == "qoder" else GroqClientError)(
+            f"No session ID in response: {sec_session}"
+        )
 
-    sec_prompt = qoder._build_reinvestigation_prompt(
+    sec_prompt = agent._build_reinvestigation_prompt(
         alert, alert_type, payload, sec_enrichment, primary_result, sec_similar
     )
-    qoder.send_message(sec_session_id, sec_prompt)
+    agent.send_message(sec_session_id, sec_prompt)
     yield {
         "event": "agent_started",
-        "data": {"agent": "secondary", "session_id": sec_session_id},
+        "data": {"agent": "secondary", "session_id": sec_session_id, "provider": agent.provider_name},
     }
 
     secondary_parts: list[str] = []
-    for stream_event in qoder.stream_session_events(sec_session_id):
+    for stream_event in agent.stream_session_events(sec_session_id):
         if stream_event["type"] == "delta":
             secondary_parts.append(stream_event["text"])
             yield {
@@ -222,6 +230,7 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
                     "detail": stream_event.get("data"),
                 },
             }
+
 
     secondary_text = "".join(secondary_parts).strip()
     secondary_parsed = parse_agent_response(secondary_text)

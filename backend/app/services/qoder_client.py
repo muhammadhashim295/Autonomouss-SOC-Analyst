@@ -26,6 +26,7 @@ class QoderClient:
         pat: str | None = None,
         api_base: str | None = None,
     ) -> None:
+        self.provider_name = "qoder"
         self._pat = pat or settings.qoder_pat
         self._base = (api_base or settings.qoder_api_base).rstrip("/")
         if not self._pat:
@@ -33,6 +34,7 @@ class QoderClient:
                 "QODER_PAT not configured. Set it in your .env file."
             )
         self._session = requests.Session()
+
         self._session.headers.update(
             {
                 "Authorization": f"Bearer {self._pat}",
