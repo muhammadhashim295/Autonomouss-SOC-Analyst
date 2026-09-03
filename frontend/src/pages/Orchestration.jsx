@@ -8,7 +8,9 @@ import StageDetail from '../components/StageDetail'
 import EscalationModal from '../components/EscalationModal'
 import MemoryToast from '../components/MemoryToast'
 import TopologyMap from '../components/TopologyMap'
+import MemoryVault from '../components/MemoryVault'
 import PitchDemoBanner from '../components/PitchDemoBanner'
+
 import { useSSE } from '../hooks/useSSE'
 
 import {
@@ -527,7 +529,18 @@ export default function Orchestration() {
             >
               🌐 THREAT TOPOLOGY MAP
             </button>
+            <button
+              onClick={() => setActiveView('memory')}
+              className={`px-3 py-1.5 rounded-lg font-mono text-xs font-semibold transition-all cursor-pointer ${
+                activeView === 'memory'
+                  ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40 glow-purple'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              🧠 RAG MEMORY VAULT
+            </button>
           </div>
+
 
           <button
             onClick={handleStopFeed}
@@ -623,7 +636,10 @@ export default function Orchestration() {
         <div className="flex-1 flex flex-col overflow-y-auto p-6 space-y-6 bg-slate-950/20">
           {activeView === 'topology' ? (
             <TopologyMap activeAlert={focusedAlert} streamState={focusedStream} alerts={alerts} />
+          ) : activeView === 'memory' ? (
+            <MemoryVault activeAlert={focusedAlert} streamState={focusedStream} />
           ) : focusedStream && focusedAlert ? (
+
 
             <div className="animate-fade-in space-y-6">
               
