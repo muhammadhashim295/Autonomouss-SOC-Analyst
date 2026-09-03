@@ -165,7 +165,7 @@ export default function Orchestration() {
   const [alerts, setAlerts] = useState([])
   const [focusedId, setFocusedId] = useState(null)
   const [flaggedAlertIds, setFlaggedAlertIds] = useState(new Set())
-  const [statusFilter, setStatusFilter] = useState('ALL')
+  const [statusFilter, setStatusFilter] = useState('ACTIVE')
   const [searchQuery, setSearchQuery] = useState('')
   const [activeView, setActiveView] = useState('pipeline') // 'pipeline' | 'topology'
 
@@ -185,25 +185,28 @@ export default function Orchestration() {
   const [activeCaseDetails, setActiveCaseDetails] = useState(null)
   const [memoryToast, setMemoryToast] = useState(null)
 
-
-
-
-
-
-
   const handleStreamEvent = useCallback((alertId, e) => {
     dispatch({ alertId, event: e.event, data: e.data })
+  }, [])
+
+  // Auto-start live threat feed on launch (interval=3s)
+  useEffect(() => {
+    startLiveFeed(300, 3, 0.20).catch(() => {})
   }, [])
 
   // Poll alerts (3s)
   useEffect(() => {
     const refresh = async () => {
-      try { setAlerts(await getAlerts(50)) } catch { /* silent */ }
+      try {
+        const res = await getAlerts(25)
+        if (Array.isArray(res)) setAlerts(res)
+      } catch { /* silent */ }
     }
     refresh()
     const t = setInterval(refresh, 3000)
     return () => clearInterval(t)
   }, [])
+
 
   // Poll live feed status (2s)
   useEffect(() => {
@@ -329,13 +332,16 @@ export default function Orchestration() {
     })
 
     // Refresh alert list and case result status
-    getAlerts(50).then(setAlerts).catch(() => {})
+    getAlerts(25).then(res => { if (Array.isArray(res)) setAlerts(res) }).catch(() => {})
     setShowEscalationModal(false)
   }
 
+  // Safe Array reference
+  const safeAlerts = Array.isArray(alerts) ? alerts : []
 
-  // Filter alerts by search & status
-  const filteredAlerts = alerts.filter(alert => {
+  // Filter alerts by search & status (ACTIVE queue hides closed cases unless tabbed)
+  const filteredAlerts = safeAlerts.filter(alert => {
+    if (statusFilter === 'ACTIVE' && alert.status === 'closed') return false
     if (statusFilter === 'PENDING' && alert.status !== 'pending') return false
     if (statusFilter === 'IN_REVIEW' && alert.status !== 'in_review') return false
     if (statusFilter === 'CLOSED' && alert.status !== 'closed') return false
@@ -348,7 +354,8 @@ export default function Orchestration() {
   })
 
   const focusedStream = focusedId ? streamMap[focusedId] : null
-  const focusedAlert = alerts.find(a => a.id === focusedId) || null
+  const focusedAlert = safeAlerts.find(a => a.id === focusedId) || null
+
   const isAwaitingApproval = focusedStream?.caseResult?.action_status === 'awaiting_approval' || focusedStream?.caseResult?.action_status === 'escalated'
 
   return (
@@ -484,11 +491,11 @@ export default function Orchestration() {
 
             {/* Filter Tabs */}
             <div className="flex gap-1 pt-1 overflow-x-auto">
-              {['ALL', 'PENDING', 'IN_REVIEW', 'FLAGGED', 'CLOSED'].map((tab) => (
+              {['ACTIVE', 'PENDING', 'FLAGGED', 'CLOSED', 'ALL'].map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setStatusFilter(tab)}
-                  className={`px-2 py-1 rounded text-[10px] font-mono font-semibold transition-all ${
+                  className={`px-2 py-1 rounded text-[10px] font-mono font-semibold transition-all cursor-pointer ${
                     statusFilter === tab
                       ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                       : 'text-slate-500 hover:text-slate-300'
@@ -498,6 +505,7 @@ export default function Orchestration() {
                 </button>
               ))}
             </div>
+
           </div>
 
           {/* Queue List */}
