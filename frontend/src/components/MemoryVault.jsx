@@ -18,7 +18,7 @@ export default function MemoryVault({ activeAlert, streamState }) {
       record_type: 'correction',
       priority_boost: '1.5x (Analyst Override)',
       similarity_score: 0.94,
-      source_alert_id: 'DEMO-EXFIL-8901',
+      source_alert_id: 'INC-2026-8901',
       alert_type: 'data_exfiltration',
       target: 'SRV-DC-01',
       ioc: '185.220.101.5',
@@ -32,7 +32,7 @@ export default function MemoryVault({ activeAlert, streamState }) {
       record_type: 'correction',
       priority_boost: '1.5x (Analyst Override)',
       similarity_score: 0.89,
-      source_alert_id: 'DEMO-FP-9026',
+      source_alert_id: 'INC-2026-9026',
       alert_type: 'authentication_failure',
       target: 'WORKSTATION-12',
       ioc: '192.168.1.50',
@@ -46,7 +46,7 @@ export default function MemoryVault({ activeAlert, streamState }) {
       record_type: 'case',
       priority_boost: '1.0x (Standard Case)',
       similarity_score: 0.82,
-      source_alert_id: 'DEMO-INJ-7712',
+      source_alert_id: 'INC-2026-7712',
       alert_type: 'prompt_injection',
       target: 'FW-EDGE-01',
       ioc: '10.0.0.1',
@@ -60,7 +60,7 @@ export default function MemoryVault({ activeAlert, streamState }) {
       record_type: 'case',
       priority_boost: '1.0x (Standard Case)',
       similarity_score: 0.76,
-      source_alert_id: 'DEMO-BF-3319',
+      source_alert_id: 'INC-2026-3319',
       alert_type: 'brute_force_login',
       target: 'WORKSTATION-12',
       ioc: '198.51.100.44',
@@ -98,7 +98,7 @@ export default function MemoryVault({ activeAlert, streamState }) {
       record_type: 'correction',
       priority_boost: '1.5x (Analyst Override)',
       similarity_score: 0.96,
-      source_alert_id: activeAlert?.source_alert_id || `LIVE-LEARN-${Math.floor(100 + Math.random() * 900)}`,
+      source_alert_id: activeAlert?.source_alert_id || `INC-2026-${Math.floor(1000 + Math.random() * 9000)}`,
       alert_type: activeAlert?.alert_type || 'data_exfiltration',
       target: activeAlert?.raw_payload?.hostname || 'SRV-DC-01',
       ioc: activeAlert?.raw_payload?.source_ip || '185.220.101.5',
@@ -133,9 +133,10 @@ export default function MemoryVault({ activeAlert, streamState }) {
           onClick={handleSimulateMemoryLearn}
           className="px-4 py-2 rounded-xl font-mono text-xs font-bold bg-purple-500/20 text-purple-300 border border-purple-500/50 hover:bg-purple-500/30 glow-purple transition-all cursor-pointer flex items-center gap-2"
         >
-          <span>⚡ SIMULATE ANALYST LEARNING</span>
+          <span>⚡ INGEST ANALYST FEEDBACK</span>
         </button>
       </div>
+
 
       {/* RAG Stat Counters Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

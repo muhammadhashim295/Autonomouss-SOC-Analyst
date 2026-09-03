@@ -379,7 +379,8 @@ export default function TopologyMap({ activeAlert, streamState, alerts = [] }) {
                     : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 hover:bg-cyan-500/30'
                 }`}
               >
-                {isPoisoned ? '✓ CLEAR POISON SIMULATION' : '⚡ SIMULATE PROMPT INJECTION'}
+                {isPoisoned ? '✓ RESET PEN-TEST PAYLOAD' : '🧪 TEST FIREWALL POISON DEFENSE'}
+
               </button>
             )}
           </div>

@@ -202,10 +202,7 @@ class GroqClient:
         import time
 
         sess_data = self._virtual_sessions.get(session_id, {})
-        role = sess_data.get("agent_role", "primary")
-        prompt = (sess_data.get("prompt") or "").lower()
-
-        if "authentication_failure" in prompt or "demo-fp" in prompt:
+        if "authentication_failure" in prompt or "auth_failure" in prompt:
             if role == "primary":
                 text = (
                     "**Verdict:** false_positive\n\n"
@@ -234,7 +231,8 @@ class GroqClient:
                     "**Self-Audit:**\n"
                     "Verified zero external IOC matches."
                 )
-        elif "data_exfiltration" in prompt or "demo-exfil" in prompt:
+        elif "data_exfiltration" in prompt or "exfil" in prompt:
+
             if role == "primary":
                 text = (
                     "**Verdict:** true_positive\n\n"
