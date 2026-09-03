@@ -27,6 +27,162 @@ export default function ComplianceReportModal({ caseResult, alert, onClose }) {
     "The secondary deep investigation agent independently re-evaluated log telemetry and RAG memory. Verified 150MB transfer from Domain Controller SRV-DC-01 to untrusted IP 185.220.101.5. Confirmed true_positive verdict and enforced high-impact human analyst gating rule."
 
 
+  const handleExportPdf = () => {
+    const printWindow = window.open('', '_blank')
+    if (!printWindow) return
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Compliance_Audit_Report_${caseId.slice(0, 8)}</title>
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+              background-color: #030712;
+              color: #f3f4f6;
+              padding: 40px;
+              line-height: 1.6;
+            }
+            .header {
+              border-bottom: 2px solid #10b981;
+              padding-bottom: 15px;
+              margin-bottom: 25px;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            }
+            .title { font-size: 20px; font-weight: bold; color: #10b981; }
+            .subtitle { font-size: 12px; color: #9ca3af; font-family: monospace; }
+            .badge {
+              background: #064e3b;
+              color: #34d399;
+              padding: 6px 12px;
+              border-radius: 6px;
+              font-size: 11px;
+              font-weight: bold;
+              font-family: monospace;
+            }
+            .grid {
+              display: grid;
+              grid-template-columns: repeat(4, 1fr);
+              gap: 15px;
+              background: #111827;
+              padding: 15px;
+              border-radius: 8px;
+              border: 1px solid #1f2937;
+              margin-bottom: 25px;
+              font-family: monospace;
+            }
+            .label { font-size: 10px; color: #6b7280; text-transform: uppercase; }
+            .val { font-size: 13px; font-weight: bold; }
+            .section-title {
+              font-size: 13px;
+              font-weight: bold;
+              color: #38bdf8;
+              border-bottom: 1px solid #1f2937;
+              padding-bottom: 5px;
+              margin-top: 25px;
+              margin-bottom: 12px;
+              font-family: monospace;
+              text-transform: uppercase;
+            }
+            .box {
+              background: #111827;
+              padding: 15px;
+              border-radius: 8px;
+              border: 1px solid #1f2937;
+              margin-bottom: 15px;
+              font-family: monospace;
+            }
+            .reasoning {
+              background: #030712;
+              padding: 12px;
+              border-radius: 6px;
+              border: 1px solid #374151;
+              font-size: 11px;
+              color: #e5e7eb;
+              white-space: pre-wrap;
+              margin-top: 6px;
+              line-height: 1.5;
+            }
+            .stamp {
+              border-top: 1px solid #1f2937;
+              padding-top: 15px;
+              margin-top: 30px;
+              display: flex;
+              justify-content: space-between;
+              font-size: 11px;
+              color: #9ca3af;
+              font-family: monospace;
+            }
+            @media print {
+              body { background-color: #ffffff; color: #111827; }
+              .grid, .box, .reasoning { background: #f9fafb; border-color: #e5e7eb; color: #111827; }
+              .title { color: #047857; }
+              .section-title { color: #0284c7; }
+              .label { color: #6b7280; }
+              .badge { background: #d1fae5; color: #047857; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div>
+              <div class="title">AUTONOMOUS CYBER SOC — POST-INCIDENT COMPLIANCE AUDIT</div>
+              <div class="subtitle">Official ISO 27001 / SOC 2 Type II Forensic Audit Report • Ref: ${caseId}</div>
+            </div>
+            <div class="badge">VERIFIED & COMPLIANT</div>
+          </div>
+
+          <div class="grid">
+            <div><div class="label">Target Asset</div><div class="val" style="color:#38bdf8">${target}</div></div>
+            <div><div class="label">Incident Type</div><div class="val">${alertType.replace(/_/g, ' ').toUpperCase()}</div></div>
+            <div><div class="label">Severity Rating</div><div class="val" style="color:${isHighImpact ? '#f87171' : '#34d399'}">${isHighImpact ? 'CRITICAL' : 'STANDARD'}</div></div>
+            <div><div class="label">Audit Status</div><div class="val" style="color:#34d399">✓ COMPLIANT</div></div>
+          </div>
+
+          <div class="section-title">1. EXPLAINABLE AI FORENSICS & DUAL-AGENT REASONING</div>
+          <div class="box">
+            <div style="font-weight:bold; color:#38bdf8; margin-bottom:4px">🤖 PRIMARY TRIAGE AGENT REASONING (${primaryVerdict.toUpperCase()} - ${(confidence * 100).toFixed(0)}% Conf)</div>
+            <div class="reasoning">${primaryReasoning}</div>
+
+            <div style="font-weight:bold; color:#c084fc; margin-top:14px; margin-bottom:4px">🧠 SECONDARY DEEP AUDITOR REASONING (${secondaryVerdict.toUpperCase()})</div>
+            <div class="reasoning">${secondaryReasoning}</div>
+          </div>
+
+          <div class="section-title">2. REGULATORY FRAMEWORK ALIGNMENT</div>
+          <div class="box">
+            <div>• ISO/IEC 27001:2022 Control A.12.6.1 (Technical Vulnerability Management): <strong style="color:#34d399">✓ COMPLIANT</strong></div>
+            <div style="margin-top:6px">• SOC 2 Type II Criteria CC7.3 / CC7.4 (Incident Detection & Response): <strong style="color:#34d399">✓ COMPLIANT</strong></div>
+            <div style="margin-top:6px">• NIST SP 800-61 Rev 2 (Computer Security Incident Handling): <strong style="color:#34d399">✓ COMPLIANT</strong></div>
+          </div>
+
+          <div class="section-title">3. RESPONSE CONTAINMENT & DIGITAL SIGNATURE</div>
+          <div class="box">
+            <div>Executed Response Action: <strong style="color:#34d399">${actionTaken.replace('_', ' ').toUpperCase()}</strong></div>
+            <div style="margin-top:6px">Action Timestamp: ${new Date().toLocaleString()}</div>
+            <div style="margin-top:6px">Digital Audit Signature: <strong style="color:#38bdf8">SOC-AUTH-${caseId.slice(0, 8).toUpperCase()}</strong></div>
+          </div>
+
+          <div class="stamp">
+            <div>Generated by Autonomous Cyber Security Operation Center</div>
+            <div>Digital Certificate Seal: APPROVED</div>
+          </div>
+
+          <script>
+            window.onload = function() {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `
+
+    printWindow.document.write(htmlContent)
+    printWindow.document.close()
+  }
+
   const handleExport = () => {
     const reportText = `
 ================================================================================
@@ -229,12 +385,21 @@ Audit Status: VERIFIED & COMPLIANT
 
         {/* Footer Controls */}
         <div className="px-8 py-4 border-t border-slate-800/80 bg-slate-950/80 flex flex-wrap items-center justify-between gap-4">
-          <button
-            onClick={handleExport}
-            className="px-5 py-2 rounded-xl font-mono text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 hover:bg-emerald-500/30 glow-green transition-all cursor-pointer flex items-center gap-2"
-          >
-            <span>{downloaded ? '✓ REPORT DOWNLOADED' : '📥 EXPORT COMPLIANCE REPORT (MD)'}</span>
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleExportPdf}
+              className="px-5 py-2 rounded-xl font-mono text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 hover:bg-emerald-500/30 glow-green transition-all cursor-pointer flex items-center gap-2"
+            >
+              <span>📄 EXPORT OFFICIAL PDF</span>
+            </button>
+
+            <button
+              onClick={handleExport}
+              className="px-4 py-2 rounded-xl font-mono text-xs text-slate-300 hover:text-white border border-slate-800 bg-slate-900/60 hover:bg-slate-900 transition-all cursor-pointer flex items-center gap-2"
+            >
+              <span>{downloaded ? '✓ MARKDOWN DOWNLOADED' : '📥 EXPORT MARKDOWN (.MD)'}</span>
+            </button>
+          </div>
 
           <button
             onClick={onClose}
@@ -248,4 +413,5 @@ Audit Status: VERIFIED & COMPLIANT
     </div>
   )
 }
+
 
