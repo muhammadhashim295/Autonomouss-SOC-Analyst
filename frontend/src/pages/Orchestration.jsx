@@ -9,7 +9,9 @@ import EscalationModal from '../components/EscalationModal'
 import MemoryToast from '../components/MemoryToast'
 import TopologyMap from '../components/TopologyMap'
 import MemoryVault from '../components/MemoryVault'
+import ExecutiveHUD from '../components/ExecutiveHUD'
 import PitchDemoBanner from '../components/PitchDemoBanner'
+
 
 import { useSSE } from '../hooks/useSSE'
 
@@ -539,7 +541,18 @@ export default function Orchestration() {
             >
               🧠 RAG MEMORY VAULT
             </button>
+            <button
+              onClick={() => setActiveView('hud')}
+              className={`px-3 py-1.5 rounded-lg font-mono text-xs font-semibold transition-all cursor-pointer ${
+                activeView === 'hud'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 glow-green'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              📈 EXECUTIVE HUD
+            </button>
           </div>
+
 
 
           <button
@@ -638,7 +651,10 @@ export default function Orchestration() {
             <TopologyMap activeAlert={focusedAlert} streamState={focusedStream} alerts={alerts} />
           ) : activeView === 'memory' ? (
             <MemoryVault activeAlert={focusedAlert} streamState={focusedStream} />
+          ) : activeView === 'hud' ? (
+            <ExecutiveHUD alerts={alerts} />
           ) : focusedStream && focusedAlert ? (
+
 
 
             <div className="animate-fade-in space-y-6">
