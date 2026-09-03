@@ -17,9 +17,10 @@ import ComplianceReportModal from '../components/ComplianceReportModal'
 import { useSSE } from '../hooks/useSSE'
 
 import {
-  getAlerts, getFirewallFlags, getLiveFeedStatus, stopLiveFeed,
+  startLiveFeed, getAlerts, getFirewallFlags, getLiveFeedStatus, stopLiveFeed,
   getMode, setMode as setModeAPI, submitAnalystDecision, getCase, ingestAlert,
 } from '../utils/api'
+
 
 
 const INIT_STAGES = {
