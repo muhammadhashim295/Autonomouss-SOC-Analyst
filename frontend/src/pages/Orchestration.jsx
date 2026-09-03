@@ -10,7 +10,9 @@ import MemoryToast from '../components/MemoryToast'
 import TopologyMap from '../components/TopologyMap'
 import MemoryVault from '../components/MemoryVault'
 import ExecutiveHUD from '../components/ExecutiveHUD'
+import ComplianceReportModal from '../components/ComplianceReportModal'
 import PitchDemoBanner from '../components/PitchDemoBanner'
+
 
 
 import { useSSE } from '../hooks/useSSE'
@@ -180,8 +182,10 @@ export default function Orchestration() {
 
   // Analyst Escalation Modal & Memory Toast state
   const [showEscalationModal, setShowEscalationModal] = useState(false)
+  const [showComplianceModal, setShowComplianceModal] = useState(false)
   const [activeCaseDetails, setActiveCaseDetails] = useState(null)
   const [memoryToast, setMemoryToast] = useState(null)
+
 
   // 🚀 Pitch Demo Mode State Machine (Hands-free Auto-Advancing)
   const [pitchDemo, setPitchDemo] = useState({ active: false, step: 1, currentAlertId: null })
@@ -690,6 +694,14 @@ export default function Orchestration() {
                     </span>
                   )}
 
+                  {/* Compliance Report Button */}
+                  <button
+                    onClick={() => setShowComplianceModal(true)}
+                    className="px-3.5 py-1.5 rounded-xl font-mono text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/25 glow-green transition-all cursor-pointer flex items-center gap-1.5"
+                  >
+                    <span>📄 VIEW COMPLIANCE REPORT</span>
+                  </button>
+
                   {/* Human Approval Required Badge */}
                   {isAwaitingApproval && (
                     <button
@@ -699,6 +711,7 @@ export default function Orchestration() {
                       ⚠ HUMAN APPROVAL REQUIRED — REVIEW & DECIDE →
                     </button>
                   )}
+
                 </div>
               </div>
 
@@ -827,6 +840,16 @@ export default function Orchestration() {
           onSubmitDecision={handleDecisionSubmitted}
         />
       )}
+
+      {/* Executive Post-Incident Compliance Report Modal */}
+      {showComplianceModal && (
+        <ComplianceReportModal
+          caseResult={focusedStream?.caseResult}
+          alert={focusedAlert}
+          onClose={() => setShowComplianceModal(false)}
+        />
+      )}
+
 
       {/* RAG Memory Writeback Toast */}
       <MemoryToast
