@@ -17,11 +17,15 @@ export default function ComplianceReportModal({ caseResult, alert, onClose }) {
   const secondaryVerdict = caseResult?.secondary_verdict || 'agree'
   const impactLevel = caseResult?.impact_level || alert?.impact_level || 'high_impact'
   const isHighImpact = impactLevel === 'high_impact'
+  const actionTaken = caseResult?.action_taken_parsed?.action || caseResult?.action_taken || alert?.suggested_action || 'isolate_host'
+  const confidence = caseResult?.confidence || 0.92
+
   const primaryReasoning = caseResult?.primary_reasoning || alert?.primary_reasoning || caseResult?.primary_parsed?.reasoning ||
     "The primary triage agent identified high-confidence threat indicators targeting SRV-DC-01. OTX Threat Intel mapped destination IP 185.220.101.5 as untrusted. Log correlation confirmed 150MB outbound data transfer, triggering ATT&CK technique T1041 (Data Exfiltration Over C2 Channel)."
 
   const secondaryReasoning = caseResult?.secondary_reasoning || alert?.secondary_reasoning || caseResult?.secondary_parsed?.reasoning ||
     "The secondary deep investigation agent independently re-evaluated log telemetry and RAG memory. Verified 150MB transfer from Domain Controller SRV-DC-01 to untrusted IP 185.220.101.5. Confirmed true_positive verdict and enforced high-impact human analyst gating rule."
+
 
   const handleExport = () => {
     const reportText = `
