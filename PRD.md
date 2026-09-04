@@ -13,8 +13,8 @@ A bank's (or other regulated organization's) SOC team — chosen given the team'
 A two-tier multi-agent system that triages, investigates, and responds to security alerts with full explainability and a self-checking audit structure, so no single AI decision is ever a black box.
 
 ## Architecture summary (see architecture.md for full detail)
-- **Primary Agent (Alert Triage Agent):** initial investigation, basic response, documentation, step-by-step reasoning, self-auditing.
-- **Secondary Agent (Deep Investigation Agent):** independently re-investigates the primary agent's output; executes standard remediation itself; escalates higher-impact decisions to a human analyst.
+- **Primary Agent (Alert Triage Agent) — Groq:** initial investigation, basic response, documentation, step-by-step reasoning, self-auditing.
+- **Secondary Agent (Deep Investigation Agent) — Cerebras:** independently re-investigates the primary agent's output; executes standard remediation itself; escalates higher-impact decisions to a human analyst.
 - **Firewall layer:** filters malicious/poisoned logs so no alert can be dismissed via log poisoning.
 - **Per-agent IAM:** each agent has only the permissions it needs.
 
@@ -43,17 +43,17 @@ Standard: block IOC, open ticket, tag/flag for review.
 High-impact (always human-gated): isolate host, disable/lock account, any action on a critical asset, any multi-asset action.
 
 ## Success criteria for the hackathon submission
-- Fully functional system: real backend, real API integrations (OTX, Gemini), real database (Supabase), not just a workflow demo.
+- Fully functional system: real backend, real API integrations (OTX, Groq, Cerebras, Cloudflare Workers AI), real database (Supabase), not just a workflow demo.
 - Two distinct, independently reasoning agents actually running.
 - Demonstrable, enforced IAM scoping per agent (not just prompt-level).
-- A real, testable log-poisoning firewall (proven against crafted test cases and continuously via Gemini-generated live feed with ~15% poison ratio).
+- A real, testable log-poisoning firewall (proven against crafted test cases and continuously via the Cloudflare Workers AI-generated live feed with ~15% poison ratio).
 - A working human-in-the-loop escalation and override flow, with the override visibly updating agent memory for future cases.
 - A clear demonstration that high-impact actions are always human-gated, in both modes.
-- A "Generate Live Feed" button that triggers real-time, Gemini-generated alert traffic to demonstrate continuous autonomous operation.
+- A "Generate Live Feed" button that triggers real-time, Cloudflare Workers AI-generated alert traffic to demonstrate continuous autonomous operation.
 
 ## Explicit non-goals (MVP scope)
 - No fine-tuned/self-hosted model for the demo (LLM API used; fine-tuning is roadmap, not MVP).
-- No real production SIEM/EDR integration (GUIDE dataset replay + Gemini-generated live feed are the alert sources).
+- No real production SIEM/EDR integration (GUIDE dataset replay + Cloudflare Workers AI-generated live feed are the alert sources).
 - No real infrastructure execution for response actions (simulated/logged only).
 - No high-volume concurrency requirement (2-3 parallel sessions is sufficient to prove the architecture).
 

@@ -56,6 +56,12 @@ class CaseBase(BaseModel):
     action_taken: Optional[str] = None
     action_status: ActionStatus = ActionStatus.none
     qoder_memory_record_id: Optional[str] = None
+    # Provider provenance (migration 005): which provider ran each agent.
+    # Primary is always Groq; Secondary is always Cerebras in the final
+    # three-provider architecture.  Optional so rows written before the
+    # migration (or before the secondary ran) still validate.
+    primary_provider: Optional[str] = None
+    secondary_provider: Optional[str] = None
 
 
 class CaseCreate(CaseBase):

@@ -12,10 +12,10 @@ and asserts:
   2. Full event sequence arrives in order: started → memory →
      enrichment → primary turn (live status + reasoning) → case
      persisted → secondary turn → action → complete
-  3. PROGRESSIVE reasoning, at the granularity the Qoder API actually
-     streams (verified by probe: agent.thinking + model spans flow
-     DURING the turn; the message itself arrives as ONE agent.message
-     event the instant the agent finishes — no token streaming):
+  3. PROGRESSIVE reasoning, streamed token-by-token from the live provider
+     (Groq for the primary, Cerebras for the secondary): our own pipeline
+     relays each provider's token stream as agent_delta events, so reasoning
+     appears incrementally DURING the turn — never batched at the end:
        - live "agent working" status arrives >1s BEFORE the agent's
          reasoning (the stream is active during the turn, not batched)
        - the primary's reasoning lands >1s BEFORE the secondary agent
@@ -215,11 +215,11 @@ def main() -> int:
     all_checks.update(seq_checks)
 
     # ── The progressive-reasoning proof ───────────────────────────────
-    # The Qoder API streams at MESSAGE granularity (one agent.message
-    # per turn — verified by probe_stream_events.py); the live signals
-    # during a turn are agent.thinking + model spans.  Progressive means:
-    # live status while the agent works, reasoning the instant it
-    # finishes, and never batched at the end of the pipeline.
+    # SSE is provider-driven: our own pipeline relays each provider's token
+    # stream (Groq primary, Cerebras secondary) as agent_delta events, so
+    # reasoning arrives incrementally during the turn.  Progressive means:
+    # live status while the agent works, reasoning tokens as they stream,
+    # and never batched at the end of the pipeline.
     p_first_t = t_of("agent_delta", "primary")
     s_start_t = t_of("agent_started", "secondary")
     complete_t = t_of("investigation_complete")

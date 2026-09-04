@@ -10,21 +10,21 @@ export default function ComplianceReportModal({ caseResult, alert, onClose }) {
 
   if (!caseResult && !alert) return null
 
-  const caseId = caseResult?.case_id || alert?.id || '87ef67bc-a3a7-4aba-b677-23d13ade4905'
+  const caseId = caseResult?.case_id || alert?.id || 'unknown'
   const alertType = alert?.alert_type || caseResult?.alert_type || 'data_exfiltration'
   const target = alert?.raw_payload?.hostname || alert?.raw_payload?.source_ip || 'SRV-DC-01'
   const primaryVerdict = caseResult?.primary_verdict || 'true_positive'
   const secondaryVerdict = caseResult?.secondary_verdict || 'agree'
-  const impactLevel = caseResult?.impact_level || alert?.impact_level || 'high_impact'
+  const impactLevel = caseResult?.impact_level || alert?.impact_level || 'standard'
   const isHighImpact = impactLevel === 'high_impact'
-  const actionTaken = caseResult?.action_taken_parsed?.action || caseResult?.action_taken || alert?.suggested_action || 'isolate_host'
-  const confidence = caseResult?.confidence || 0.92
+  const actionTaken = caseResult?.action_taken_parsed?.action || caseResult?.action_taken || alert?.suggested_action || 'none'
+  const confidence = caseResult?.confidence || caseResult?.primary_confidence || 0
 
   const primaryReasoning = caseResult?.primary_reasoning || alert?.primary_reasoning || caseResult?.primary_parsed?.reasoning ||
-    "The primary triage agent identified high-confidence threat indicators targeting SRV-DC-01. OTX Threat Intel mapped destination IP 185.220.101.5 as untrusted. Log correlation confirmed 150MB outbound data transfer, triggering ATT&CK technique T1041 (Data Exfiltration Over C2 Channel)."
+    "No primary agent reasoning was recorded for this case."
 
   const secondaryReasoning = caseResult?.secondary_reasoning || alert?.secondary_reasoning || caseResult?.secondary_parsed?.reasoning ||
-    "The secondary deep investigation agent independently re-evaluated log telemetry and RAG memory. Verified 150MB transfer from Domain Controller SRV-DC-01 to untrusted IP 185.220.101.5. Confirmed true_positive verdict and enforced high-impact human analyst gating rule."
+    "No secondary agent reasoning was recorded for this case."
 
 
   const handleExportPdf = () => {

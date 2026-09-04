@@ -1,9 +1,10 @@
 """Phase 11 — Memory store: structured case records + similarity retrieval.
 
-Storage: the ``memory_records`` Supabase table (migration 002).  The Qoder
-Cloud Agents API has no native memory endpoint (probed: /memories, /memory,
-/knowledge all 404; /vaults is a credentials container only), so the store
-lives in Supabase and ``cases.qoder_memory_record_id`` points at the record.
+Storage: the ``memory_records`` Supabase table (migration 002).  Case memory
+lives entirely in Supabase — there is no external agent-platform memory store
+in the final three-provider architecture (Groq / Cerebras / Cloudflare Workers
+AI).  The ``cases.qoder_memory_record_id`` column (a legacy name retained for
+compatibility) points at the record.
 
 Design (design.md "Memory records"): every closed case writes one structured
 record — alert metadata, evidence gathered, ATT&CK technique, cross-checked

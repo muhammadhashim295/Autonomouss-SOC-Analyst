@@ -1,7 +1,6 @@
 """Application configuration — loads environment variables via pydantic-settings."""
 
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -29,26 +28,40 @@ class Settings(BaseSettings):
     # ── AlienVault OTX (required for IOC enrichment, Phase 6+) ────────
     otx_api_key: str = ""
 
-    # ── Gemini (required for live feed generation, Phase 3b) ──────
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
-
-    # ── Qoder Cloud Agents ────────────────────────────────────────────
-    qoder_pat: Optional[str] = None
-    qoder_primary_agent_id: Optional[str] = None
-    qoder_primary_env_id: Optional[str] = None
-    qoder_secondary_agent_id: Optional[str] = None
-    qoder_secondary_env_id: Optional[str] = None
-    qoder_api_base: str = "https://api.qoder.com/api/v1/cloud"
-
-    # ── Agent Provider Toggle (qoder | groq) ──────────────────────────
-    agent_provider: str = "qoder"
+    # ── Provider 1: Groq — Primary Alert Triage Agent ─────────────────
+    # OpenAI-compatible Chat Completions API with SSE streaming.
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-120b"
 
+    # ── Provider 2: Cerebras — Secondary Deep Investigation Agent ─────
+    # OpenAI-compatible Chat Completions API with SSE streaming.
+    cerebras_api_key: str = ""
+    cerebras_model: str = "gpt-oss-120b"
 
+    # ── Provider 3: Cloudflare Workers AI — live alert generator ──────
+    # REST: /client/v4/accounts/{account_id}/ai/run/{model}
+    cloudflare_api_token: str = ""
+    cloudflare_account_id: str = ""
+    cloudflare_model: str = "@cf/meta/llama-3.1-8b-instruct"
+    # Output-token cap per generation.  Latency scales with this: ~8s at 1024
+    # vs ~3-4s at 512 on the free tier.  512 keeps alert JSON complete while
+    # staying fast enough for the concurrent pool to sustain the feed cadence.
+    cloudflare_max_tokens: int = 512
 
+    # ── Live feed cadence ──────────────────────────────────────────────
+    # One new alert every N seconds (2-3s window; 3s is the stable default).
+    live_feed_interval_seconds: int = 3
+    # Fraction of generated alerts carrying a log-poisoning payload.
+    live_feed_poison_ratio: float = 0.15
+    # Number of concurrent Cloudflare generator workers.  A single call takes
+    # ~3-8s, so one worker cannot sustain a 3s cadence on its own; a small pool
+    # fills a queue that the inserter drains once per interval.
+    live_feed_concurrency: int = 3
 
+    # ── Provider retry policy (all three providers) ────────────────────
+    # Exponential backoff on rate-limit / transient errors: 1s, 2s, 4s.
+    provider_max_retries: int = 3
+    provider_backoff_base_seconds: float = 1.0
 
     # ── Action execution (Phase 10) ────────────────────────────────────
     # Minimum cross-checked confidence before the secondary agent may

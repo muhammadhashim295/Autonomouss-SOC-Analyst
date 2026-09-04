@@ -5,23 +5,30 @@ Runs the same pipeline as ``POST /alerts/{id}/reinvestigate`` (Phases
 so the backend can relay agent reasoning to the frontend via SSE while
 the agents are still thinking.
 
+Final three-provider architecture (one provider per role):
+
+- **Groq** runs the Primary Alert Triage Agent (``groq_client.py``)
+- **Cerebras** runs the Secondary Deep Investigation Agent
+  (``cerebras_client.py``)
+- **Cloudflare Workers AI** generates the live alerts (``cloudflare_client.py``)
+
+The SSE event vocabulary below is emitted by *our own pipeline code* — it is
+identical regardless of which provider runs an agent, because both LLM clients
+expose the same streaming interface (``stream_session_events`` yielding
+``{"type": "delta", "text": ...}``).  There is no provider-specific event relay.
+
 Event vocabulary (``{"event": name, "data": {...}}``):
 
-- ``investigation_started``  — alert metadata
+- ``investigation_started``  — alert metadata + provider assignment
 - ``memory_retrieved``       — similar past cases (per agent)
 - ``enrichment_complete``    — the 4-skill results (per agent, fresh)
-- ``agent_started``          — agent session created (primary|secondary)
-- ``agent_status``           — live session signals (agent.thinking,
-                              model spans) relayed the moment they land —
-                              the API streams at MESSAGE granularity (one
-                              agent.message per turn), so these are the
-                              live "agent is working" signals
-- ``agent_delta``            — agent reasoning text (the full message,
-                              delivered the instant the agent finishes)
+- ``agent_started``          — agent session created (primary|secondary) + provider
+- ``agent_delta``            — streamed reasoning token(s) from the agent
+- ``agent_status``           — optional live status signals (provider-agnostic)
 - ``agent_complete``         — parsed verdict / confidence / reasoning
 - ``case_persisted``         — case row written after the primary run
 - ``action_decided``         — Phase 10 action pipeline outcome
-- ``investigation_complete`` — final summary (case, verdicts, action)
+- ``investigation_complete`` — final summary (case, verdicts, action, providers)
 """
 
 from __future__ import annotations
@@ -31,15 +38,14 @@ from typing import Any, Iterator
 
 from app.db.supabase_client import get_supabase
 from app.services.actions import decide_and_execute_action
-from app.services.agent_provider import get_agent_client
-from app.services.groq_client import GroqClientError
+from app.services.cerebras_client import CerebrasClientError, get_cerebras_client
+from app.services.groq_client import GroqClientError, get_groq_client
 from app.services.investigation import (
     classify_impact,
     parse_agent_response,
     persist_case,
     retrieve_similar_cases,
 )
-from app.services.qoder_client import QoderClientError
 from app.services.skills import (
     correlate_logs,
     detect_deviation,
@@ -64,16 +70,20 @@ def _run_skills(alert_type: str, payload: dict[str, Any]) -> dict[str, Any]:
 def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
     """Full dual-agent investigation as a live event stream (Phase 14).
 
-    Mirrors the reinvestigate endpoint: the primary investigates and its
-    case is persisted, the secondary independently re-derives with fresh
-    skills, then the enforced action pipeline decides/executes.  Every
-    stage is yielded as ``{"event": ..., "data": ...}`` the moment it
-    happens — ``agent_delta`` events carry the agents' reasoning live.
+    The Primary Agent (Groq) investigates and its case is persisted; the
+    Secondary Agent (Cerebras) independently re-derives with fresh skills;
+    then the enforced action pipeline decides/executes.  Every stage is
+    yielded as ``{"event": ..., "data": ...}`` the moment it happens —
+    ``agent_delta`` events carry each agent's reasoning live, token by token.
 
     Exceptions propagate to the caller (the SSE layer converts them into
     an ``investigation_error`` event and reverts the alert).
     """
-    agent = get_agent_client()
+    # One provider per role — hardwired, no toggle.
+    primary_client = get_groq_client()
+    secondary_client = get_cerebras_client()
+    primary_provider = primary_client.provider_name      # "groq"
+    secondary_provider = secondary_client.provider_name  # "cerebras"
 
     alert_id = alert["id"]
     alert_type = alert.get("alert_type", "unknown")
@@ -85,11 +95,12 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
             "alert_id": alert_id,
             "source_alert_id": alert.get("source_alert_id"),
             "alert_type": alert_type,
-            "agent_provider": agent.provider_name,
+            "primary_provider": primary_provider,
+            "secondary_provider": secondary_provider,
         },
     }
 
-    # ── Primary Agent ──────────────────────────────────────────────────
+    # ── Primary Agent (Groq) ───────────────────────────────────────────
     similar_cases = retrieve_similar_cases(
         alert_type,
         payload,
@@ -111,24 +122,26 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
         },
     }
 
-    session = agent.create_session()
+    session = primary_client.create_session(agent_id="primary")
     session_id = session.get("id", session.get("session_id", ""))
     if not session_id:
-        raise (QoderClientError if agent.provider_name == "qoder" else GroqClientError)(
-            f"No session ID in response: {session}"
-        )
+        raise GroqClientError(f"No session ID in primary response: {session}")
 
-    prompt = agent._build_investigation_prompt(
+    prompt = primary_client._build_investigation_prompt(
         alert, alert_type, payload, enrichment, similar_cases
     )
-    agent.send_message(session_id, prompt)
+    primary_client.send_message(session_id, prompt)
     yield {
         "event": "agent_started",
-        "data": {"agent": "primary", "session_id": session_id, "provider": agent.provider_name},
+        "data": {
+            "agent": "primary",
+            "session_id": session_id,
+            "provider": primary_provider,
+        },
     }
 
     primary_parts: list[str] = []
-    for stream_event in agent.stream_session_events(session_id):
+    for stream_event in primary_client.stream_session_events(session_id):
         if stream_event["type"] == "delta":
             primary_parts.append(stream_event["text"])
             yield {
@@ -136,9 +149,7 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
                 "data": {"agent": "primary", "text": stream_event["text"]},
             }
         else:
-            # Live session signals (agent.thinking, model spans) relayed
-            # the moment they land — the frontend can show the agent
-            # working while it thinks.
+            # Optional provider-agnostic live status signals.
             yield {
                 "event": "agent_status",
                 "data": {
@@ -154,6 +165,7 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
         "event": "agent_complete",
         "data": {
             "agent": "primary",
+            "provider": primary_provider,
             "verdict": primary_parsed.get("verdict"),
             "confidence": primary_parsed.get("confidence"),
             "reasoning": primary_parsed.get("reasoning", ""),
@@ -166,10 +178,12 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
         parsed=primary_parsed,
         enrichment=enrichment,
         impact_level=impact_level,
+        primary_provider=primary_provider,
+        secondary_provider=secondary_provider,
     )
     yield {"event": "case_persisted", "data": {"case_id": case["id"]}}
 
-    # ── Secondary Agent (independent re-investigation) ─────────────────
+    # ── Secondary Agent (Cerebras — independent re-investigation) ──────
     primary_result = {
         "agent_response": primary_text,
         "parsed": primary_parsed,
@@ -197,24 +211,26 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
         "data": {"agent": "secondary", "enrichment": sec_enrichment},
     }
 
-    sec_session = agent.create_session(agent_id="secondary")
+    sec_session = secondary_client.create_session(agent_id="secondary")
     sec_session_id = sec_session.get("id", sec_session.get("session_id", ""))
     if not sec_session_id:
-        raise (QoderClientError if agent.provider_name == "qoder" else GroqClientError)(
-            f"No session ID in response: {sec_session}"
-        )
+        raise CerebrasClientError(f"No session ID in secondary response: {sec_session}")
 
-    sec_prompt = agent._build_reinvestigation_prompt(
+    sec_prompt = secondary_client._build_reinvestigation_prompt(
         alert, alert_type, payload, sec_enrichment, primary_result, sec_similar
     )
-    agent.send_message(sec_session_id, sec_prompt)
+    secondary_client.send_message(sec_session_id, sec_prompt)
     yield {
         "event": "agent_started",
-        "data": {"agent": "secondary", "session_id": sec_session_id, "provider": agent.provider_name},
+        "data": {
+            "agent": "secondary",
+            "session_id": sec_session_id,
+            "provider": secondary_provider,
+        },
     }
 
     secondary_parts: list[str] = []
-    for stream_event in agent.stream_session_events(sec_session_id):
+    for stream_event in secondary_client.stream_session_events(sec_session_id):
         if stream_event["type"] == "delta":
             secondary_parts.append(stream_event["text"])
             yield {
@@ -231,7 +247,6 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
                 },
             }
 
-
     secondary_text = "".join(secondary_parts).strip()
     secondary_parsed = parse_agent_response(secondary_text)
     secondary_verdict = secondary_parsed.get("secondary_verdict")
@@ -239,6 +254,7 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
         "event": "agent_complete",
         "data": {
             "agent": "secondary",
+            "provider": secondary_provider,
             "secondary_verdict": secondary_verdict,
             "verdict": secondary_parsed.get("verdict"),
             "confidence": secondary_parsed.get("confidence"),
@@ -259,6 +275,8 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
         primary_parsed=primary_parsed,
         secondary_parsed=secondary_parsed,
         enrichment=sec_enrichment,
+        primary_provider=primary_provider,
+        secondary_provider=secondary_provider,
     )
 
     decision = action_outcome["decision"]
@@ -290,16 +308,20 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
             "case_closed": action_outcome["case_closed"],
             "alert_status": action_outcome["alert_status"],
             "memory_record_id": action_outcome.get("memory_record_id"),
+            "primary_provider": primary_provider,
+            "secondary_provider": secondary_provider,
         },
     }
 
     logger.info(
-        "Streamed investigation for %s complete: case %s, %s/%s, "
+        "Streamed investigation for %s complete: case %s, %s(%s)/%s(%s), "
         "action %s (%s)",
         alert.get("source_alert_id"),
         case["id"],
         primary_parsed.get("verdict"),
+        primary_provider,
         secondary_verdict,
+        secondary_provider,
         decision["action_id"],
         decision["action_status"],
     )

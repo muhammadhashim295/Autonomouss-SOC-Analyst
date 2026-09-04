@@ -54,8 +54,8 @@ export default function MemoryToast({ toast, onClose }) {
           <p className="text-xs text-slate-300 font-mono leading-relaxed line-clamp-2">
             {toast.message || (
               isCorrection
-                ? 'Analyst correction indexed into Qoder Memory. Future similar alerts will prioritize this guidance.'
-                : 'Case outcome indexed into Qoder Memory for similarity retrieval.'
+                ? 'Analyst correction indexed into Case Memory. Future similar alerts will prioritize this guidance.'
+                : 'Case outcome indexed into Case Memory for similarity retrieval.'
             )}
           </p>
 

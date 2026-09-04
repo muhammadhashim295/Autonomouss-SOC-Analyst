@@ -82,9 +82,28 @@ export async function setMode(mode) {
 
 // ── Cases ──
 
+export async function getCases(limit = 100, status = null) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (status) params.set('status', status)
+  const res = await fetch(`${BASE}/cases/?${params}`)
+  if (!res.ok) throw new Error(`Failed to get cases: ${res.status}`)
+  return res.json()
+}
+
 export async function getCase(caseId) {
   const res = await fetch(`${BASE}/cases/${caseId}`)
   if (!res.ok) throw new Error(`Failed to get case: ${res.status}`)
+  return res.json()
+}
+
+// ── Memory ──
+
+export async function getMemoryRecords({ record_type = null, alert_type = null, limit = 100 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (record_type) params.set('record_type', record_type)
+  if (alert_type) params.set('alert_type', alert_type)
+  const res = await fetch(`${BASE}/memory/records?${params}`)
+  if (!res.ok) throw new Error(`Failed to get memory records: ${res.status}`)
   return res.json()
 }
 

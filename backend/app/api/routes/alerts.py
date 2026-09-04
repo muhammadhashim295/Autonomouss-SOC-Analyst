@@ -9,10 +9,9 @@ from app.core.firewall import check_alert, sanitize_snippet
 from app.db.supabase_client import get_supabase
 from app.models.schemas import AlertCreate, AlertResponse, ReinvestigateRequest
 from app.services.actions import decide_and_execute_action
-from app.services.agent_provider import get_agent_client
-from app.services.groq_client import GroqClientError
+from app.services.cerebras_client import CerebrasClientError, get_cerebras_client
+from app.services.groq_client import GroqClientError, get_groq_client
 from app.services.investigation import persist_case
-from app.services.qoder_client import QoderClientError
 
 from app.services.skills import (
     correlate_logs,
@@ -137,7 +136,7 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
     Phase 7 full investigation flow:
     1. Retrieves similar past cases (stub — Phase 11)
     2. Runs all 4 investigation skills
-    3. Sends structured prompt to the Qoder agent
+    3. Sends structured prompt to the Primary Agent (Groq)
     4. Parses the agent's response (verdict, confidence, reasoning, self-audit)
     5. Classifies impact level
     6. Persists the case to the ``cases`` table
@@ -155,14 +154,14 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
     # 2. Update status to in_review
     client.table("alerts").update({"status": "in_review"}).eq("id", alert_id).execute()
 
-    # 3. Call agent (resolved per AGENT_PROVIDER setting)
+    # 3. Call the Primary Agent (Groq)
     try:
-        agent = get_agent_client()
-        triage_result = agent.triage_alert(alert)
-    except (QoderClientError, GroqClientError) as exc:
+        primary_client = get_groq_client()
+        triage_result = primary_client.triage_alert(alert)
+    except GroqClientError as exc:
         # Revert status on failure
         client.table("alerts").update({"status": "pending"}).eq("id", alert_id).execute()
-        raise HTTPException(status_code=502, detail=f"Agent error: {exc}")
+        raise HTTPException(status_code=502, detail=f"Primary agent error: {exc}")
 
 
     # 4. Persist case to Supabase
@@ -172,6 +171,7 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
             parsed=triage_result["parsed"],
             enrichment=triage_result["enrichment"],
             impact_level=triage_result["impact_level"],
+            primary_provider=triage_result.get("agent_provider", "groq"),
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"Case persistence error: {exc}")
@@ -192,6 +192,7 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
         "agent_response": triage_result["agent_response"],
         "enrichment": triage_result["enrichment"],
         "session_id": triage_result["session_id"],
+        "primary_provider": triage_result.get("agent_provider", "groq"),
     }
 
 
@@ -222,7 +223,9 @@ async def reinvestigate_alert(
         raise HTTPException(status_code=404, detail="Alert not found")
 
     alert = result.data[0]
-    agent = get_agent_client()
+    # One provider per role — hardwired, no toggle.
+    primary_client = get_groq_client()
+    secondary_client = get_cerebras_client()
 
     # 2. Obtain the primary agent's investigation result
     primary_ran_now = False
@@ -237,12 +240,12 @@ async def reinvestigate_alert(
         }
         case = _get_or_create_case(client, alert_id, alert, primary_result)
     else:
-        # No report supplied — run the Primary Agent first
+        # No report supplied — run the Primary Agent (Groq) first
         try:
             client.table("alerts").update({"status": "in_review"}).eq("id", alert_id).execute()
-            primary_result = agent.triage_alert(alert)
+            primary_result = primary_client.triage_alert(alert)
             primary_ran_now = True
-        except (QoderClientError, GroqClientError) as exc:
+        except GroqClientError as exc:
             client.table("alerts").update({"status": "pending"}).eq("id", alert_id).execute()
             raise HTTPException(status_code=502, detail=f"Primary agent error: {exc}")
 
@@ -252,14 +255,16 @@ async def reinvestigate_alert(
                 parsed=primary_result["parsed"],
                 enrichment=primary_result["enrichment"],
                 impact_level=primary_result["impact_level"],
+                primary_provider=primary_client.provider_name,
+                secondary_provider=secondary_client.provider_name,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=f"Case persistence error: {exc}")
 
-    # 3. Run the Secondary Agent's independent re-investigation
+    # 3. Run the Secondary Agent's (Cerebras) independent re-investigation
     try:
-        secondary_result = agent.reinvestigate_alert(alert, primary_result)
-    except (QoderClientError, GroqClientError) as exc:
+        secondary_result = secondary_client.reinvestigate_alert(alert, primary_result)
+    except CerebrasClientError as exc:
         raise HTTPException(status_code=502, detail=f"Secondary agent error: {exc}")
 
 
@@ -280,6 +285,8 @@ async def reinvestigate_alert(
         primary_parsed=primary_result["parsed"],
         secondary_parsed=secondary_result["parsed"],
         enrichment=secondary_result.get("enrichment"),
+        primary_provider=primary_client.provider_name,
+        secondary_provider=secondary_client.provider_name,
     )
 
     # 6. Return both agents' results + the action outcome
@@ -288,6 +295,8 @@ async def reinvestigate_alert(
         "source_alert_id": alert.get("source_alert_id"),
         "case_id": case["id"],
         "primary_ran_now": primary_ran_now,
+        "primary_provider": primary_client.provider_name,
+        "secondary_provider": secondary_client.provider_name,
         "primary": {
             "verdict": primary_result["parsed"].get("verdict"),
             "confidence": primary_result["parsed"].get("confidence"),
@@ -347,4 +356,5 @@ def _get_or_create_case(
         impact_level=classify_impact(
             alert.get("alert_type", "unknown"), alert.get("raw_payload", {})
         ),
+        primary_provider="groq",
     )

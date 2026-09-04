@@ -59,7 +59,7 @@ export default function TopologyMap({ activeAlert, streamState, alerts = [] }) {
       icon: '🤖',
       category: 'Primary LLM Core',
       details: 'Rapid-response triage agent performing initial threat classification, verdict generation, and ATT&CK mapping.',
-      metrics: { model: 'Groq / Llama 3.3', avgResponseTime: '1.4s', confidence: streamState?.primary?.confidence ? `${(streamState.primary.confidence * 100).toFixed(0)}%` : '—' },
+      metrics: { model: 'Groq / gpt-oss-120b', avgResponseTime: '1.4s', confidence: streamState?.primary?.confidence ? `${(streamState.primary.confidence * 100).toFixed(0)}%` : '—' },
     },
     {
       id: 'secondary-agent',
@@ -72,7 +72,7 @@ export default function TopologyMap({ activeAlert, streamState, alerts = [] }) {
       icon: '🧠',
       category: 'Independent Auditor',
       details: 'Independent secondary agent that re-examines evidence without bias, cross-checking the primary verdict against RAG memory.',
-      metrics: { model: 'Groq / Llama 3.3', crossCheckResult: streamState?.secondary?.verdict || 'Standby', agreement: '100%' },
+      metrics: { model: 'Cerebras / gpt-oss-120b', crossCheckResult: streamState?.secondary?.verdict || 'Standby', agreement: '100%' },
     },
 
     // 3. Knowledge & Skill Matrix
@@ -371,17 +371,21 @@ export default function TopologyMap({ activeAlert, streamState, alerts = [] }) {
 
             {/* Interactive Simulation Controls */}
             {activeNodeObj.id === 'firewall' && (
-              <button
-                onClick={() => setSimulatedPoison(prev => !prev)}
-                className={`w-full py-1.5 rounded-lg font-mono text-xs font-semibold border transition-all ${
-                  isPoisoned
-                    ? 'bg-pink-500/20 text-pink-300 border-pink-500/50 hover:bg-pink-500/30'
-                    : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 hover:bg-cyan-500/30'
-                }`}
-              >
-                {isPoisoned ? '✓ RESET PEN-TEST PAYLOAD' : '🧪 TEST FIREWALL POISON DEFENSE'}
-
-              </button>
+              <div className="space-y-2">
+                <div className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">
+                  Demo Simulation Control
+                </div>
+                <button
+                  onClick={() => setSimulatedPoison(prev => !prev)}
+                  className={`w-full py-1.5 rounded-lg font-mono text-xs font-semibold border transition-all ${
+                    isPoisoned
+                      ? 'bg-pink-500/20 text-pink-300 border-pink-500/50 hover:bg-pink-500/30'
+                      : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 hover:bg-cyan-500/30'
+                  }`}
+                >
+                  {isPoisoned ? '✓ RESET SIMULATED POISON' : '🧪 SIMULATE POISON PAYLOAD'}
+                </button>
+              </div>
             )}
           </div>
         )}

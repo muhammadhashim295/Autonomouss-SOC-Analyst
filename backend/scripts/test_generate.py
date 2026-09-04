@@ -1,19 +1,19 @@
-"""Quick test for Phase 3b — Gemini client + generator endpoints."""
+"""Quick test for Phase 3b — Cloudflare Workers AI client + generator endpoints."""
 
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.services.gemini_client import GeminiClient
+from app.services.cloudflare_client import CloudflareClient
 
-# 1. Test Gemini client (template fallback since no API key)
+# 1. Test Cloudflare client (template fallback when no token/account is set)
 print("=" * 60)
-print("Phase 3b Test — Gemini Client")
+print("Phase 3b Test — Cloudflare Workers AI Client")
 print("=" * 60)
 
-gc = GeminiClient()
-print(f"Gemini API available: {gc.available}")
+gc = CloudflareClient()
+print(f"Cloudflare API available: {gc.available}")
 print()
 
 # Generate 3 alerts without poison
@@ -66,9 +66,9 @@ print()
 
 # 3. Test all 10 alert types
 print("--- All alert types ---")
-from app.services.gemini_client import _ALERT_TYPES
+from app.services.cloudflare_client import _ALERT_TYPES
 for at in _ALERT_TYPES:
-    from app.services.gemini_client import _generate_from_template
+    from app.services.cloudflare_client import _generate_from_template
     payload = _generate_from_template(at)
     print(f"  {at:40s} | keys: {len(payload)}")
 

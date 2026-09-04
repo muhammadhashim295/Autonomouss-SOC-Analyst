@@ -17,7 +17,7 @@ export default function LiveStatsBar({ feedStatus, stats, mode, onModeToggle }) 
           </div>
           <span className="font-mono text-xs font-semibold uppercase tracking-wider text-slate-300">
             {isRunning ? (
-              <span className="text-emerald-400 text-glow-green">LIVE THREAT FEED</span>
+              <span className="text-emerald-400 text-glow-green">LIVE CLOUDFLARE THREAT FEED</span>
             ) : (
               <span className="text-slate-500">FEED STANDBY</span>
             )}
@@ -27,23 +27,28 @@ export default function LiveStatsBar({ feedStatus, stats, mode, onModeToggle }) 
         {stats && isRunning && (
           <div className="flex items-center gap-4 text-xs font-mono bg-slate-950/60 px-3 py-1 rounded-lg border border-slate-800/80">
             <div className="flex items-center gap-1.5">
-              <span className="text-slate-500">Ingested:</span>
+              <span className="text-slate-500">Live alerts:</span>
               <span className="text-cyan-400 font-semibold">{stats.alerts_generated}</span>
-              <span className="text-slate-600">/</span>
-              <span className="text-slate-400">{stats.total_planned}</span>
             </div>
 
             <span className="text-slate-700">│</span>
 
             <div className="flex items-center gap-1.5">
-              <span className="text-slate-500">Poison Payload:</span>
-              <span className="text-red-400 font-semibold text-glow-red">{stats.poison_injected}</span>
+              <span className="text-slate-500">Source:</span>
+              <span className="text-emerald-400 font-semibold">Cloudflare AI</span>
             </div>
 
             <span className="text-slate-700">│</span>
 
             <div className="flex items-center gap-1.5">
-              <span className="text-slate-500">Firewall Blocked:</span>
+              <span className="text-slate-500">Cadence:</span>
+              <span className="text-cyan-400 font-semibold">{stats.interval_seconds || 3}s</span>
+            </div>
+
+            <span className="text-slate-700">│</span>
+
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500">Firewall Flagged:</span>
               <span className="text-amber-400 font-semibold text-glow-amber">{stats.firewall_caught}</span>
             </div>
           </div>

@@ -37,6 +37,11 @@ const INIT_STREAM = () => ({
   caseResult: null, error: null,
 })
 
+const LIVE_FEED_DURATION_SECONDS = 300
+const LIVE_FEED_INTERVAL_SECONDS = 3
+const LIVE_FEED_POISON_RATIO = 0
+const ALERT_POLL_INTERVAL_MS = 1000
+
 /** Find current active stage for stream visualization */
 function currentStage(stages) {
   const order = ['db', 'action', 'secondary', 'primary', 'firewall', 'enrichment', 'investigation', 'liveEnv']
@@ -143,7 +148,7 @@ function streamReducer(state, { alertId, event, data }) {
       u = { ...s, stages: { ...s.stages, db: 'complete' }, caseResult: data }
       break
     case 'investigation_error':
-      u = { ...s, error: data.detail }
+      u = { ...s, error: data.detail || null }
       break
     default:
       u = s
@@ -158,6 +163,25 @@ function AlertStream({ alertId, onEvent }) {
   return null
 }
 
+function isLiveQueueAlert(alert, sessionStartedAt) {
+  if (!['pending', 'in_review'].includes(alert.status)) return false
+  if (!alert.source_alert_id?.startsWith('LIVE-')) return false
+
+  const receivedAt = Date.parse(alert.received_at || '')
+  return Number.isFinite(receivedAt) && receivedAt >= sessionStartedAt
+}
+
+// Closed/resolved alerts from this launch — same session scoping as the live
+// queue, but for the CLOSED tab (kept separate so auto-investigation still only
+// ever picks up pending/in_review alerts).
+function isClosedQueueAlert(alert, sessionStartedAt) {
+  if (alert.status !== 'closed') return false
+  if (!alert.source_alert_id?.startsWith('LIVE-')) return false
+
+  const receivedAt = Date.parse(alert.received_at || '')
+  return Number.isFinite(receivedAt) && receivedAt >= sessionStartedAt
+}
+
 export default function Orchestration() {
   const { client } = useParams()
   const displayName = client ? client.charAt(0).toUpperCase() + client.slice(1).replace(/-/g, ' ') : 'Command Center'
@@ -169,6 +193,11 @@ export default function Orchestration() {
   const [statusFilter, setStatusFilter] = useState('ACTIVE')
   const [searchQuery, setSearchQuery] = useState('')
   const [activeView, setActiveView] = useState('pipeline') // 'pipeline' | 'topology'
+  const [focusPinned, setFocusPinned] = useState(false)
+  const [globalError, setGlobalError] = useState(null)
+  const [announcement, setAnnouncement] = useState('')
+  // Queue is scoped to this Command Center launch, never historic records.
+  const [liveSessionStartedAt, setLiveSessionStartedAt] = useState(() => Date.now())
 
 
   // Multi-stream state & Active streams
@@ -190,21 +219,41 @@ export default function Orchestration() {
     dispatch({ alertId, event: e.event, data: e.data })
   }, [])
 
-  // Auto-start live threat feed on launch (interval=3s)
+  // Auto-start live threat feed on launch — skip if a run is already active
   useEffect(() => {
-    startLiveFeed(300, 3, 0.20).catch(() => {})
+    const boot = async () => {
+      try {
+        const s = await getLiveFeedStatus()
+        if (s.status === 'running') return
+        const run = await startLiveFeed(
+          LIVE_FEED_DURATION_SECONDS,
+          LIVE_FEED_INTERVAL_SECONDS,
+          LIVE_FEED_POISON_RATIO,
+        )
+        const startedAt = Date.parse(run.started_at || '')
+        setLiveSessionStartedAt(Number.isFinite(startedAt) ? startedAt : Date.now())
+      } catch (err) {
+        // A concurrent run is benign (re-visit or StrictMode double-mount)
+        if (!String(err.message || '').includes('already active')) {
+          setGlobalError(err.message)
+        }
+      }
+    }
+    boot()
   }, [])
 
-  // Poll alerts (3s)
+  // Poll every second so a newly generated Cloudflare alert appears immediately.
   useEffect(() => {
     const refresh = async () => {
       try {
         const res = await getAlerts(25)
         if (Array.isArray(res)) setAlerts(res)
-      } catch { /* silent */ }
+      } catch (err) {
+        setGlobalError(err.message)
+      }
     }
     refresh()
-    const t = setInterval(refresh, 3000)
+    const t = setInterval(refresh, ALERT_POLL_INTERVAL_MS)
     return () => clearInterval(t)
   }, [])
 
@@ -216,7 +265,11 @@ export default function Orchestration() {
         const s = await getLiveFeedStatus()
         setFeedStatus(s.status)
         setFeedStats(s.status === 'running' ? s : null)
-      } catch { /* silent */ }
+        if (s.last_error) setGlobalError(s.last_error)
+      } catch (err) {
+        setFeedStatus('idle')
+        setGlobalError(err.message)
+      }
     }
     refresh()
     const t = setInterval(refresh, 2000)
@@ -224,11 +277,13 @@ export default function Orchestration() {
   }, [])
 
   // Fetch mode once
-  useEffect(() => { getMode().then(m => setMode(m.mode)).catch(() => {}) }, [])
-
-  // Auto-focus newest active stream
-
   useEffect(() => {
+    getMode().then(m => setMode(m.mode)).catch((err) => setGlobalError(err.message))
+  }, [])
+
+  // Auto-focus newest active stream (disabled when focus is pinned)
+  useEffect(() => {
+    if (focusPinned) return
     if (!focusedId && streamingIds.size > 0) {
       const first = [...streamingIds][streamingIds.size - 1]
       setFocusedId(first)
@@ -242,9 +297,9 @@ export default function Orchestration() {
         setFocusedId(activeIds[activeIds.length - 1])
       }
     }
-  }, [focusedId, streamingIds, streamMap])
+  }, [focusedId, streamingIds, streamMap, focusPinned])
 
-  // Clean finished streams from active set
+  // Clean finished streams from active set and announce completed investigations
   useEffect(() => {
     setStreamingIds(prev => {
       const next = new Set(prev)
@@ -254,11 +309,41 @@ export default function Orchestration() {
         if (s && (s.stages.db === 'complete' || s.error)) {
           next.delete(id)
           changed = true
+          if (s.stages.db === 'complete' && s.caseResult) {
+            const verdict = s.caseResult.primary_verdict === 'true_positive' ? 'true positive' : 'false positive'
+            const action = s.caseResult.action_status === 'executed' ? 'action executed' : s.caseResult.action_status?.replace('_', ' ')
+            setAnnouncement(`Investigation complete for alert ${id.slice(0, 8)}. ${verdict}. ${action}.`)
+          }
         }
       }
       return changed ? next : prev
     })
   }, [streamMap])
+
+  // Auto-investigate pending alerts — up to 3 concurrent SSE streams.
+  // Newest alerts first; a slot frees up as each stream completes or errors.
+  const MAX_CONCURRENT_STREAMS = 3
+  useEffect(() => {
+    setStreamingIds(prev => {
+      if (prev.size >= MAX_CONCURRENT_STREAMS) return prev
+      const next = new Set(prev)
+      let added = false
+      for (const a of alerts) {
+        if (next.size >= MAX_CONCURRENT_STREAMS) break
+        // Only Cloudflare alerts generated during this launch can enter the pipeline.
+        if (
+          isLiveQueueAlert(a, liveSessionStartedAt)
+          && a.status === 'pending'
+          && !next.has(a.id)
+          && !streamMap[a.id]
+        ) {
+          next.add(a.id)
+          added = true
+        }
+      }
+      return added ? next : prev
+    })
+  }, [alerts, streamMap, liveSessionStartedAt])
 
   // Fetch Firewall Flags
   useEffect(() => {
@@ -270,6 +355,7 @@ export default function Orchestration() {
 
   const handleSelectAlert = useCallback((alert) => {
     setFocusedId(alert.id)
+    setFocusPinned(true)
     if (!streamMap[alert.id] && alert.status === 'pending') {
       setStreamingIds(prev => new Set([...prev, alert.id]))
     }
@@ -337,15 +423,17 @@ export default function Orchestration() {
     setShowEscalationModal(false)
   }
 
-  // Safe Array reference
+  // The command queue never replays historic data or solved alerts.
   const safeAlerts = Array.isArray(alerts) ? alerts : []
+  const liveQueueAlerts = safeAlerts.filter(alert => isLiveQueueAlert(alert, liveSessionStartedAt))
+  const closedQueueAlerts = safeAlerts.filter(alert => isClosedQueueAlert(alert, liveSessionStartedAt))
 
-  // Filter alerts by search & status (ACTIVE queue hides closed cases unless tabbed)
-  const filteredAlerts = safeAlerts.filter(alert => {
-    if (statusFilter === 'ACTIVE' && alert.status === 'closed') return false
+  // Filter this launch's queue by search and state. CLOSED draws from resolved
+  // alerts; the other tabs draw from the live (pending/in_review) queue.
+  const queueSource = statusFilter === 'CLOSED' ? closedQueueAlerts : liveQueueAlerts
+  const filteredAlerts = queueSource.filter(alert => {
     if (statusFilter === 'PENDING' && alert.status !== 'pending') return false
     if (statusFilter === 'IN_REVIEW' && alert.status !== 'in_review') return false
-    if (statusFilter === 'CLOSED' && alert.status !== 'closed') return false
     if (statusFilter === 'FLAGGED' && !flaggedAlertIds.has(alert.id)) return false
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
@@ -378,10 +466,30 @@ export default function Orchestration() {
         onModeToggle={handleModeToggle}
       />
 
+      {/* Global Error Banner */}
+      {globalError && (
+        <div className="px-6 py-2 bg-red-950/40 border-b border-red-500/30 flex items-center justify-between z-30">
+          <span className="text-red-400 font-mono text-xs" role="alert">
+            ⚠ {globalError}
+          </span>
+          <button
+            onClick={() => setGlobalError(null)}
+            className="text-slate-400 hover:text-white font-mono text-xs"
+            aria-label="Dismiss error"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Screen-reader announcements for live events */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">
+        {announcement}
+      </div>
 
       {/* Sub Header Navigation */}
 
-      <div className="px-6 py-3 border-b border-slate-800/80 bg-slate-950/40 flex items-center justify-between z-20">
+      <div className="px-6 py-3 border-b border-slate-800/80 bg-slate-950/40 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3 z-20">
         <div className="flex items-center gap-3">
           <Link to="/" className="text-slate-400 hover:text-cyan-300 font-mono text-xs transition-colors flex items-center gap-1">
             <span>←</span> Back to Gateway
@@ -398,9 +506,9 @@ export default function Orchestration() {
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {/* View Switcher Tabs */}
-          <div className="flex items-center gap-1 p-1 bg-slate-900/80 border border-slate-800 rounded-xl">
+          <div className="flex items-center gap-1 p-1 bg-slate-900/80 border border-slate-800 rounded-xl flex-wrap">
             <button
               onClick={() => setActiveView('pipeline')}
               className={`px-3 py-1.5 rounded-lg font-mono text-xs font-semibold transition-all cursor-pointer ${
@@ -446,6 +554,18 @@ export default function Orchestration() {
 
 
           <button
+            onClick={() => setFocusPinned(!focusPinned)}
+            className={`px-3 py-1.5 rounded-lg font-mono text-xs font-semibold border transition-all duration-300 flex items-center gap-1.5 ${
+              focusPinned
+                ? 'border-amber-500/40 text-amber-300 bg-amber-500/15 hover:bg-amber-500/25 glow-amber cursor-pointer'
+                : 'border-slate-800 text-slate-500 bg-slate-900/40 hover:text-slate-300'
+            }`}
+            title={focusPinned ? 'Focus is pinned to selected alert' : 'Auto-focus follows newest active stream'}
+          >
+            {focusPinned ? '🔒 FOCUS PINNED' : '🔓 AUTO FOCUS'}
+          </button>
+
+          <button
             onClick={handleStopFeed}
             className={`px-3 py-1.5 rounded-lg font-mono text-xs font-semibold border transition-all duration-300 flex items-center gap-1.5 ${
               feedStatus === 'running'
@@ -467,17 +587,17 @@ export default function Orchestration() {
       </div>
 
       {/* Main Command Center Layout */}
-      <div className="flex-1 flex overflow-hidden">
-        
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+
         {/* ── Left Sidebar: Alert Queue ── */}
-        <div className="w-80 border-r border-slate-800/80 flex flex-col bg-slate-950/50 backdrop-blur-md z-10">
+        <div className="w-full lg:w-80 border-b lg:border-b-0 lg:border-r border-slate-800/80 flex flex-col bg-slate-950/50 backdrop-blur-md z-10 lg:self-start max-h-[60vh] lg:max-h-[75vh]">
           
           {/* Queue Filter Bar */}
           <div className="p-3 border-b border-slate-800/80 space-y-2">
             <div className="flex items-center justify-between">
               <span className="font-mono text-xs font-bold text-slate-300 uppercase tracking-wider">Alert Queue</span>
               <span className="font-mono text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                {alerts.length} total
+                {liveQueueAlerts.length} live
               </span>
             </div>
 
@@ -492,7 +612,7 @@ export default function Orchestration() {
 
             {/* Filter Tabs */}
             <div className="flex gap-1 pt-1 overflow-x-auto">
-              {['ACTIVE', 'PENDING', 'FLAGGED', 'CLOSED', 'ALL'].map((tab) => (
+              {['ACTIVE', 'PENDING', 'IN_REVIEW', 'FLAGGED', 'CLOSED'].map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setStatusFilter(tab)}
@@ -528,7 +648,13 @@ export default function Orchestration() {
                     isStreaming={streamingIds.has(alert.id)}
                     firewallFlagged={flaggedAlertIds.has(alert.id)}
                     streamStage={stream ? currentStage(stream.stages) : null}
+                    streamError={stream?.error || null}
                     onClick={() => handleSelectAlert(alert)}
+                    onRetry={(a) => {
+                      dispatch({ alertId: a.id, event: 'investigation_error', data: { detail: null } })
+                      dispatch({ alertId: a.id, event: 'investigation_started', data: {} })
+                      setStreamingIds(prev => new Set([...prev, a.id]))
+                    }}
                   />
                 )
               })
@@ -539,7 +665,7 @@ export default function Orchestration() {
         {/* ── Main Workspace Panel ── */}
         <div className="flex-1 flex flex-col overflow-y-auto p-6 space-y-6 bg-slate-950/20">
           {activeView === 'topology' ? (
-            <TopologyMap activeAlert={focusedAlert} streamState={focusedStream} alerts={alerts} />
+            <TopologyMap activeAlert={focusedAlert} streamState={focusedStream} alerts={liveQueueAlerts} />
           ) : activeView === 'memory' ? (
             <MemoryVault activeAlert={focusedAlert} streamState={focusedStream} />
           ) : activeView === 'hud' ? (

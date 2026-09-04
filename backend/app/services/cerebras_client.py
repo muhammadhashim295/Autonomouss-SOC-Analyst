@@ -1,17 +1,18 @@
-"""Groq LLM client — Primary Alert Triage Agent.
+"""Cerebras LLM client — Secondary Deep Investigation Agent.
 
-Provider 1 of the final three-provider architecture:
+Provider 2 of the final three-provider architecture:
 
-- **Groq** → Primary Alert Triage Agent (this module)
-- **Cerebras** → Secondary Deep Investigation Agent (``cerebras_client.py``)
+- **Groq** → Primary Alert Triage Agent (``groq_client.py``)
+- **Cerebras** → Secondary Deep Investigation Agent (this module)
 - **Cloudflare Workers AI** → live alert generator (``cloudflare_client.py``)
 
-Groq exposes an OpenAI-compatible Chat Completions API with SSE streaming, so
-this client streams token-by-token and emits ``{"type": "delta", "text": ...}``
-events that the pipeline relays as ``agent_delta``.  Agent behaviour (system
-prompts, structured prompt builders, deterministic fallback text) lives in
-:mod:`app.services.agent_prompts` and is shared verbatim with the Cerebras
-client so both agents parse identically.
+Cerebras exposes an OpenAI-compatible Chat Completions API with SSE streaming,
+so this client has the *same interface shape* as ``groq_client.py``: virtual
+sessions, token-by-token ``{"type": "delta", "text": ...}`` streaming, and the
+same ``triage_alert`` / ``reinvestigate_alert`` return dicts.  Verdict,
+confidence, reasoning and self-audit are parsed identically because the system
+prompts, prompt builders and fallback text are shared from
+:mod:`app.services.agent_prompts`.
 
 All network calls go through :func:`app.services.provider_common.post_with_backoff`
 — rate-limits / transient errors are retried with exponential backoff (1s, 2s,
@@ -39,27 +40,27 @@ from app.services.provider_common import post_with_backoff
 
 logger = logging.getLogger(__name__)
 
-# Groq OpenAI-compatible API base.
-_GROQ_API_BASE = "https://api.groq.com/openai/v1"
+# Cerebras OpenAI-compatible API base.
+_CEREBRAS_API_BASE = "https://api.cerebras.ai/v1"
 
 
-class GroqClientError(Exception):
-    """Raised when a Groq API call fails."""
+class CerebrasClientError(Exception):
+    """Raised when a Cerebras API call fails."""
 
 
-class GroqClient:
-    """Synchronous Groq client for the Primary Alert Triage Agent."""
+class CerebrasClient:
+    """Synchronous Cerebras client for the Secondary Deep Investigation Agent."""
 
     def __init__(
         self,
         api_key: str | None = None,
         model: str | None = None,
     ) -> None:
-        self._api_key = api_key or settings.groq_api_key
-        self._model = model or settings.groq_model or "openai/gpt-oss-120b"
+        self._api_key = api_key or settings.cerebras_api_key
+        self._model = model or settings.cerebras_model or "gpt-oss-120b"
         if not self._api_key:
-            raise GroqClientError(
-                "GROQ_API_KEY not configured. Set GROQ_API_KEY in your .env file."
+            raise CerebrasClientError(
+                "CEREBRAS_API_KEY not configured. Set CEREBRAS_API_KEY in your .env file."
             )
 
         self._session = requests.Session()
@@ -69,9 +70,7 @@ class GroqClient:
                 "Content-Type": "application/json",
             }
         )
-        self.provider_name = "groq"
-        # Virtual-session storage: holds the prompt + agent role per session so
-        # create_session/send_message/stream_session_events stay decoupled.
+        self.provider_name = "cerebras"
         self._virtual_sessions: dict[str, dict[str, Any]] = {}
 
     # ── Sessions (virtual facade) ─────────────────────────────────────────────
@@ -81,13 +80,18 @@ class GroqClient:
         agent_id: str | None = None,
         environment_id: str | None = None,
     ) -> dict[str, Any]:
-        """Create a virtual session and return ``{"id": ...}``."""
+        """Create a virtual session and return ``{"id": ...}``.
+
+        Cerebras is the Secondary Agent, so an unspecified role defaults to
+        ``"secondary"`` (the pipeline always passes ``agent_id="secondary"``
+        explicitly, but this keeps the default sensible).
+        """
         role = (
-            "secondary"
-            if (agent_id == "secondary" or environment_id == "secondary")
-            else "primary"
+            "primary"
+            if (agent_id == "primary" or environment_id == "primary")
+            else "secondary"
         )
-        session_id = f"groq-session-{uuid4().hex[:12]}"
+        session_id = f"cerebras-session-{uuid4().hex[:12]}"
         session_obj = {
             "id": session_id,
             "session_id": session_id,
@@ -95,7 +99,7 @@ class GroqClient:
             "prompt": None,
         }
         self._virtual_sessions[session_id] = session_obj
-        logger.info("Created Groq virtual session %s for role=%s", session_id, role)
+        logger.info("Created Cerebras virtual session %s for role=%s", session_id, role)
         return session_obj
 
     def send_message(self, session_id: str, text: str) -> dict[str, Any]:
@@ -104,7 +108,7 @@ class GroqClient:
             self._virtual_sessions[session_id] = {
                 "id": session_id,
                 "session_id": session_id,
-                "agent_role": "primary",
+                "agent_role": "secondary",
                 "prompt": text,
             }
         else:
@@ -116,18 +120,18 @@ class GroqClient:
     def stream_session_events(
         self, session_id: str, timeout: int = 120
     ) -> Iterator[dict[str, Any]]:
-        """Call Groq Chat Completions with ``stream=True`` and yield token deltas.
+        """Call Cerebras Chat Completions with ``stream=True`` and yield deltas.
 
-        Yields ``{"type": "delta", "text": token}`` for each streamed chunk.
-        On a permanent rejection (no quota / org-blocked model / bad key) or an
+        Yields ``{"type": "delta", "text": token}`` for each streamed chunk.  On
+        a permanent rejection (e.g. HTTP 402 — no inference quota) or an
         exhausted retry budget, falls back to the deterministic report generator
         so the investigation pipeline never dies mid-demo.
         """
         sess_data = self._virtual_sessions.get(session_id)
         if not sess_data or not sess_data.get("prompt"):
-            raise GroqClientError(f"No prompt found for Groq session {session_id}")
+            raise CerebrasClientError(f"No prompt found for Cerebras session {session_id}")
 
-        role = sess_data.get("agent_role", "primary")
+        role = sess_data.get("agent_role", "secondary")
         payload = {
             "model": self._model,
             "messages": [
@@ -137,22 +141,22 @@ class GroqClient:
             "temperature": 0.2,
             "stream": True,
         }
-        url = f"{_GROQ_API_BASE}/chat/completions"
+        url = f"{_CEREBRAS_API_BASE}/chat/completions"
 
         try:
             resp = post_with_backoff(
-                self._session, url, provider="groq", json=payload, stream=True, timeout=timeout
+                self._session, url, provider="cerebras", json=payload, stream=True, timeout=timeout
             )
         except requests.RequestException as exc:
             logger.warning(
-                "Groq connection failed after retries (%s) — using deterministic fallback.", exc
+                "Cerebras connection failed after retries (%s) — using deterministic fallback.", exc
             )
             yield from self._generate_fallback_stream(session_id)
             return
 
         if resp.status_code != 200:
             logger.warning(
-                "Groq API returned HTTP %s (%s) — using deterministic fallback report.",
+                "Cerebras API returned HTTP %s (%s) — using deterministic fallback report.",
                 resp.status_code,
                 resp.text[:200],
             )
@@ -178,35 +182,38 @@ class GroqClient:
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue
-                # gpt-oss reasoning models stream reasoning separately; only the
-                # final answer (``content``) forms the structured report we parse.
                 content_piece = choices[0].get("delta", {}).get("content", "")
                 if content_piece:
                     yielded_any = True
                     yield {"type": "delta", "text": content_piece}
         except requests.RequestException as exc:
-            logger.warning("Groq stream interrupted (%s).", exc)
+            logger.warning("Cerebras stream interrupted (%s).", exc)
         finally:
             resp.close()
 
         if not yielded_any:
-            logger.warning("Groq returned an empty stream — using deterministic fallback report.")
+            logger.warning(
+                "Cerebras returned an empty stream — using deterministic fallback report."
+            )
             yield from self._generate_fallback_stream(session_id)
 
     def _generate_fallback_stream(self, session_id: str) -> Iterator[dict[str, Any]]:
         """Stream a deterministic, evidence-styled report word-by-word.
 
-        Used only when Groq rejects the call permanently or the stream is empty.
-        Shared text lives in :mod:`app.services.agent_prompts` so the fallback is
-        identical in shape to a live report and parses the same way.
+        Used only when Cerebras rejects the call permanently (e.g. 402 quota) or
+        the stream is empty.  Shared text lives in
+        :mod:`app.services.agent_prompts` so the fallback is identical in shape
+        to a live report and parses the same way.
         """
         sess_data = self._virtual_sessions.get(session_id)
         if not sess_data or not sess_data.get("prompt"):
-            raise GroqClientError(f"No prompt found for Groq fallback session {session_id}")
+            raise CerebrasClientError(
+                f"No prompt found for Cerebras fallback session {session_id}"
+            )
 
-        role = str(sess_data.get("agent_role", "primary"))
+        role = str(sess_data.get("agent_role", "secondary"))
         logger.warning(
-            "Groq fallback engaged for session %s (role=%s) — deterministic report, NOT live model output.",
+            "Cerebras fallback engaged for session %s (role=%s) — deterministic report, NOT live model output.",
             session_id,
             role,
         )
@@ -217,7 +224,7 @@ class GroqClient:
             yield {"type": "delta", "text": word + (" " if i < len(words) - 1 else "")}
 
     def stream_response(self, session_id: str, timeout: int = 120) -> str:
-        """Collect and return the full text response from the Groq stream."""
+        """Collect and return the full text response from the Cerebras stream."""
         parts: list[str] = []
         for stream_event in self.stream_session_events(session_id, timeout):
             if stream_event["type"] == "delta":
@@ -227,7 +234,7 @@ class GroqClient:
     # ── High-level investigation pipelines ────────────────────────────────────
 
     def triage_alert(self, alert_payload: dict[str, Any]) -> dict[str, Any]:
-        """Run the complete Primary Agent triage investigation via Groq."""
+        """Run a Primary-style triage via Cerebras (interface parity)."""
         from app.services.investigation import (
             classify_impact,
             parse_agent_response,
@@ -266,7 +273,7 @@ class GroqClient:
         parsed = parse_agent_response(response_text)
 
         logger.info(
-            "Groq Primary Triage for alert %s complete: verdict=%s, conf=%.2f",
+            "Cerebras Primary Triage for alert %s complete: verdict=%s, conf=%.2f",
             alert_payload.get("source_alert_id"),
             parsed["verdict"],
             parsed["confidence"],
@@ -278,7 +285,7 @@ class GroqClient:
             "enrichment": enrichment,
             "impact_level": impact_level,
             "similar_cases": similar_cases,
-            "agent_provider": "groq",
+            "agent_provider": "cerebras",
         }
 
     def reinvestigate_alert(
@@ -286,7 +293,7 @@ class GroqClient:
         alert_payload: dict[str, Any],
         primary_result: dict[str, Any],
     ) -> dict[str, Any]:
-        """Run a Secondary Agent re-investigation via Groq (interface parity)."""
+        """Run the Secondary Agent's independent re-investigation via Cerebras."""
         from app.services.investigation import (
             parse_agent_response,
             retrieve_similar_cases,
@@ -323,7 +330,7 @@ class GroqClient:
         parsed = parse_agent_response(response_text)
 
         logger.info(
-            "Groq Secondary Re-investigation for alert %s complete: sec_verdict=%s",
+            "Cerebras Secondary Re-investigation for alert %s complete: sec_verdict=%s",
             alert_payload.get("source_alert_id"),
             parsed.get("secondary_verdict"),
         )
@@ -333,7 +340,7 @@ class GroqClient:
             "parsed": parsed,
             "enrichment": enrichment,
             "similar_cases": similar_cases,
-            "agent_provider": "groq",
+            "agent_provider": "cerebras",
         }
 
     # ── Prompt builders (shared, provider-agnostic) ───────────────────────────
@@ -365,12 +372,12 @@ class GroqClient:
 
 
 # Singleton instance helper
-_groq_client: GroqClient | None = None
+_cerebras_client: CerebrasClient | None = None
 
 
-def get_groq_client() -> GroqClient:
-    """Return a singleton GroqClient instance."""
-    global _groq_client
-    if _groq_client is None:
-        _groq_client = GroqClient()
-    return _groq_client
+def get_cerebras_client() -> CerebrasClient:
+    """Return a singleton CerebrasClient instance."""
+    global _cerebras_client
+    if _cerebras_client is None:
+        _cerebras_client = CerebrasClient()
+    return _cerebras_client

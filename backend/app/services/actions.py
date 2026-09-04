@@ -347,6 +347,8 @@ def decide_and_execute_action(
     primary_parsed: dict[str, Any],
     secondary_parsed: dict[str, Any],
     enrichment: Optional[dict[str, Any]] = None,
+    primary_provider: str = "groq",
+    secondary_provider: str = "cerebras",
 ) -> dict[str, Any]:
     """Run the full Phase 10 action pipeline for a cross-checked case.
 
@@ -395,6 +397,10 @@ def decide_and_execute_action(
             for k in ("secondary_verdict", "confidence", "reasoning", "self_audit", "impact_level")
         },
         "enrichment": enrichment,
+        # Provider provenance — always recorded here (JSONB) so it survives even
+        # before migration 005 adds the dedicated cases columns.
+        "primary_provider": primary_provider,
+        "secondary_provider": secondary_provider,
     }
 
     update_fields: dict[str, Any] = {

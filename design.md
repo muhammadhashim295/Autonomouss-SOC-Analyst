@@ -22,7 +22,9 @@
 - `action_taken` (text, nullable)
 - `action_status` (enum: none, executed, escalated, awaiting_approval)
 - `closed_at` (timestamp, nullable)
-- `qoder_memory_record_id` (text) — pointer back to the full record in Qoder's memory store
+- `qoder_memory_record_id` (text) — pointer back to the full case record in the Supabase `memory_records` table (legacy column name; the store is Supabase, not an external agent platform)
+- `primary_provider` (text, nullable) — provider that ran the Primary Alert Triage Agent (`groq`); added in migration 005
+- `secondary_provider` (text, nullable) — provider that ran the Secondary Deep Investigation Agent (`cerebras`); NULL until the secondary runs; added in migration 005
 
 ### `analyst_overrides`
 - `id` (uuid, pk)
@@ -40,7 +42,7 @@
 - `raw_snippet` (text) — the offending content, sanitized for storage
 - `created_at` (timestamp)
 
-## Qoder Memory Store — case record schema
+## Case Memory Store (Supabase `memory_records`) — case record schema
 Each investigation writes a structured record:
 - `alert_id`, `timestamp`, `alert_type`
 - `evidence_gathered` — log correlation results, OTX IOC matches, behavioral deviation flags
@@ -105,7 +107,7 @@ GUIDE dataset, pre-selected alerts covering:
 ## Poisoned log test cases
 Constructed by the team, not from the GUIDE dataset — should include a few known indirect-prompt-injection patterns embedded in log fields (e.g. "ignore previous instructions", role-play/system-prompt-mimicking text, unusual encoding) to prove the firewall middleware catches them before either agent processes the alert.
 
-## Live feed generation (Gemini-backed)
+## Live feed generation (Cloudflare Workers AI-backed)
 
 ### Purpose
 Produce a continuous stream of realistic, varied security alerts for demo/testing purposes. Supplements the 6 scripted GUIDE demo beats with additive background traffic. The firewall runs on every generated alert — no bypass.
@@ -116,15 +118,15 @@ Produce a continuous stream of realistic, varied security alerts for demo/testin
 Starts a background generation run. Does not block the request.
 - **Params (all optional):**
   - `duration_seconds` (int, default 120) — how long the run lasts
-  - `interval_seconds` (int, default 5) — seconds between each generated alert
+  - `interval_seconds` (int, default 3) — seconds between each generated alert (stable default within the 2-3 s window)
   - `poison_ratio` (float, default 0.15) — probability that any given generated alert contains a prompt-injection/log-poisoning payload (~1 in 7)
 - **Behavior:**
   - Runs as a FastAPI background task (asyncio)
-  - On each interval tick, calls Gemini to generate one alert matching the `alerts` table schema (`source_alert_id`, `alert_type`, `raw_payload`)
+  - On each interval tick, calls Cloudflare Workers AI to generate one alert matching the `alerts` table schema (`source_alert_id`, `alert_type`, `raw_payload`)
   - POSTs the generated alert through the existing `POST /alerts/` ingestion pipeline — firewall runs on every one
   - Stops automatically after `duration_seconds` elapses
   - Does NOT touch or interfere with the 6 scripted GUIDE demo alerts
-- **Response:** `{ "status": "started", "run_id": "...", "duration_seconds": 120, "interval_seconds": 5, "poison_ratio": 0.15, "estimated_alerts": 24 }`
+- **Response:** `{ "status": "started", "run_id": "...", "duration_seconds": 120, "interval_seconds": 3, "poison_ratio": 0.15, "estimated_alerts": 40 }`
 
 **`GET /alerts/generate/status`**
 Returns the current state of the generation run.
@@ -135,8 +137,8 @@ Returns the current state of the generation run.
 Cancels an in-progress generation run early.
 - **Response:** `{ "status": "stopped", "alerts_generated": 8 }`
 
-### Gemini alert generation spec
-Each call to Gemini produces one alert with:
+### Cloudflare Workers AI alert generation spec
+Each call to Cloudflare Workers AI produces one alert with:
 - `source_alert_id`: `LIVE-<timestamp>-<random>` to distinguish from GUIDE alerts
 - `alert_type`: one of — `brute_force_login`, `port_scan`, `suspicious_process_execution`, `data_exfiltration`, `authentication_failure`, `malware_detected`, `phishing_email`, `dns_anomaly`, `lateral_movement`, `privilege_escalation`
 - `raw_payload`: realistic fields matching the alert type (IPs, ports, timestamps, log entries, hostnames, usernames, etc.)

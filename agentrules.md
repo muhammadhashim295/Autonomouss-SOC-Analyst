@@ -1,5 +1,13 @@
 # Agent Rules — Autonomous SOC Analyst Framework
 
+## Provider assignment (final three-provider architecture)
+Each agent role is hardwired to one independent free-tier provider — there is no runtime toggle and no single-vendor agent platform:
+- **Primary Alert Triage Agent → Groq** (OpenAI-compatible Chat Completions API, streaming).
+- **Secondary Deep Investigation Agent → Cerebras** (same client interface shape as Groq, streaming).
+- **Live alert generator → Cloudflare Workers AI** (replaces the earlier Gemini generator; default one alert every 3 s).
+
+All three providers are called through a shared retry-with-exponential-backoff helper (1s, 2s, 4s; max 3 retries) on rate-limit/transient errors, and every case records which provider actually ran it (`primary_provider`, `secondary_provider`). The rules below define agent behaviour independently of provider, so both agents behave identically no matter which service runs them.
+
 ## General principles (both agents)
 - Every verdict must cite specific evidence (log entries, IOC matches, ATT&CK technique) — never state a conclusion without the evidence that produced it.
 - Every output must include a stated confidence level.

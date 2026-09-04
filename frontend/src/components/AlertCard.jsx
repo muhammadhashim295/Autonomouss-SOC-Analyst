@@ -3,7 +3,7 @@
  * Renders source alert ID, classification, severity badge, firewall flag indicator,
  * and live processing stage indicator.
  */
-export default function AlertCard({ alert, isSelected, isStreaming, firewallFlagged, streamStage, onClick }) {
+export default function AlertCard({ alert, isSelected, isStreaming, firewallFlagged, streamStage, streamError, onClick, onRetry }) {
   const statusColor = {
     pending: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
     in_review: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/30 animate-pulse',
@@ -83,7 +83,7 @@ export default function AlertCard({ alert, isSelected, isStreaming, firewallFlag
       </div>
 
       {/* Pipeline stage indicator for streaming alerts */}
-      {streamStage && (
+      {streamStage && !streamError && (
         <div className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-800/40">
           <div className="relative flex items-center justify-center">
             <div className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
@@ -92,6 +92,23 @@ export default function AlertCard({ alert, isSelected, isStreaming, firewallFlag
           <span className="text-[11px] font-mono text-cyan-300 font-medium">
             {stageLabels[streamStage] || streamStage}
           </span>
+        </div>
+      )}
+
+      {/* Stream error with retry */}
+      {streamError && (
+        <div className="mt-2 pt-2 border-t border-red-500/30">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-mono text-red-400 truncate flex-1" title={streamError}>
+              ⚠ {streamError}
+            </span>
+            <button
+              onClick={(e) => { e.stopPropagation(); onRetry?.(alert) }}
+              className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-red-500/20 text-red-300 border border-red-500/40 hover:bg-red-500/30 transition-colors"
+            >
+              RETRY
+            </button>
+          </div>
         </div>
       )}
     </div>

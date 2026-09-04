@@ -7,6 +7,7 @@ from app.services.alert_generator import (
     start_generation,
     stop_generation,
 )
+from app.services.cloudflare_client import CloudflareGenerationError
 
 router = APIRouter(prefix="/alerts/generate", tags=["generate"])
 
@@ -14,17 +15,18 @@ router = APIRouter(prefix="/alerts/generate", tags=["generate"])
 @router.post("/start")
 async def generate_start(
     duration_seconds: int = 120,
-    interval_seconds: int = 5,
+    interval_seconds: int = 3,
     poison_ratio: float = 0.15,
 ) -> dict:
-    """Start a Gemini-backed alert generation run.
+    """Start a Cloudflare Workers AI-backed alert generation run.
 
     The generation runs as a background task — this endpoint returns
     immediately.  Generated alerts flow through the normal ingestion
     pipeline including the log-poisoning firewall.
 
     - **duration_seconds**: how long the run lasts (default 120)
-    - **interval_seconds**: seconds between each alert (default 5)
+    - **interval_seconds**: seconds between each alert (default 3 — the stable
+      point of the 2-3s live-feed window)
     - **poison_ratio**: probability of injecting a poison payload per tick (default 0.15 ≈ 1 in 7)
     """
     if not (2 <= interval_seconds <= 300):
@@ -45,6 +47,8 @@ async def generate_start(
 
     try:
         return start_generation(duration_seconds, interval_seconds, poison_ratio)
+    except CloudflareGenerationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 

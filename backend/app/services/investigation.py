@@ -273,6 +273,8 @@ def persist_case(
     parsed: dict[str, Any],
     enrichment: dict[str, Any],
     impact_level: str,
+    primary_provider: str = "groq",
+    secondary_provider: Optional[str] = None,
 ) -> dict[str, Any]:
     """Write the investigation result to the ``cases`` table in Supabase.
 
@@ -287,6 +289,11 @@ def persist_case(
         The 4-skill enrichment results.
     impact_level : str
         Output of :func:`classify_impact` — ``"standard"`` or ``"high_impact"``.
+    primary_provider : str
+        Provider that ran the Primary Agent (``"groq"``).
+    secondary_provider : str | None
+        Provider that ran the Secondary Agent (``"cerebras"``), or None if the
+        secondary has not run (e.g. primary-only ``/triage``).
 
     Returns the inserted case row.
     """
@@ -308,19 +315,42 @@ def persist_case(
         "action_status": "none",
         "closed_at": None,
         "qoder_memory_record_id": None,
+        # Provider provenance (migration 005): which provider ran each agent.
+        "primary_provider": primary_provider,
+        "secondary_provider": secondary_provider,
     }
 
-    result = supabase.table("cases").insert(case_row).execute()
+    try:
+        result = supabase.table("cases").insert(case_row).execute()
+    except Exception as exc:  # noqa: BLE001
+        # Migration 005 (provider columns) may not be applied yet.  Retry
+        # without them so the investigation still persists — provider
+        # provenance is still carried in the investigation_snapshot JSONB and
+        # in every SSE event / API response.  Run
+        # migrations/005_provider_columns.sql to enable the dedicated columns.
+        logger.warning(
+            "Case insert with provider columns failed (%s); retrying without "
+            "them. Run migrations/005_provider_columns.sql to persist provider "
+            "columns.",
+            exc,
+        )
+        case_row.pop("primary_provider", None)
+        case_row.pop("secondary_provider", None)
+        result = supabase.table("cases").insert(case_row).execute()
 
     if not result.data:
         raise RuntimeError("Failed to insert case into Supabase")
 
     case = result.data[0]
+    # Always expose provider provenance on the in-memory case object, even if
+    # the columns are not present yet, so API responses stay consistent.
+    case.setdefault("primary_provider", primary_provider)
+    case.setdefault("secondary_provider", secondary_provider)
 
     # Also store the full reasoning and self-audit as enrichment metadata
     # (the cases table doesn't have columns for these — they live in the
-    # Qoder Memory Store record in Phase 11.  For now, we store them
-    # in a supplementary dict that the endpoint can return.)
+    # Supabase ``memory_records`` case memory in Phase 11.  For now, we store
+    # them in a supplementary dict that the endpoint can return.)
     case["reasoning"] = parsed.get("reasoning", "")
     case["self_audit"] = parsed.get("self_audit", "")
     case["enrichment_summary"] = enrichment

@@ -1,20 +1,45 @@
-"""Gemini API client for generating realistic security alerts.
+"""Cloudflare Workers AI client — live alert generator.
 
-Uses the Google Gemini API to produce varied, realistic alert payloads.
-Falls back to template-based generation when the API is unavailable or
-no API key is configured.
+Provider 3 of the final three-provider architecture:
+
+- **Groq** → Primary Alert Triage Agent (``groq_client.py``)
+- **Cerebras** → Secondary Deep Investigation Agent (``cerebras_client.py``)
+- **Cloudflare Workers AI** → live alert generator (this module)
+
+Replaces the former Gemini generator.  Produces varied, realistic alert payloads
+matching the ``alerts`` table schema (``source_alert_id`` / ``alert_type`` /
+``raw_payload``), with the same ~15% log-poisoning injection logic.  When
+Cloudflare is unavailable (no token/account) or a live run is not required, it
+falls back to deterministic template generation.
+
+Cloudflare Workers AI REST endpoint::
+
+    POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}
+    Authorization: Bearer {CLOUDFLARE_API_TOKEN}
+    {"prompt": "...", "max_tokens": 1024, "temperature": 0.9}
+    → {"result": {"response": "..."}, "success": true}
+
+All network calls go through :func:`app.services.provider_common.post_with_backoff`
+— rate-limits / transient errors are retried with exponential backoff (1s, 2s,
+4s) before failing.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import random
 import re
 import string
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import requests
 
 from app.core.config import settings
+from app.services.provider_common import post_with_backoff
+
+logger = logging.getLogger(__name__)
 
 _ALERT_TYPES = [
     "brute_force_login",
@@ -106,8 +131,6 @@ def _rand_id() -> str:
 
 
 def _ts(minutes_ago: int = 0) -> str:
-    from datetime import timedelta
-
     dt = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -118,7 +141,7 @@ def _ts(minutes_ago: int = 0) -> str:
 def _generate_from_template(alert_type: str) -> dict[str, Any]:
     """Generate a realistic alert payload from templates.
 
-    Used as fallback when Gemini API is unavailable.
+    Used as fallback when Cloudflare Workers AI is unavailable.
     """
     src_internal = random.choice(_INTERNAL_IPS)
     dst_internal = random.choice(_INTERNAL_IPS)
@@ -269,7 +292,7 @@ def _generate_from_template(alert_type: str) -> dict[str, Any]:
                 "Invoice attached - payment due",
             ]),
             "links": [f"https://{sender_domain}/verify?token={''.join(random.choices(string.ascii_lowercase, k=20))}"],
-            "description": f"Suspicious email from external sender with credential harvesting link",
+            "description": "Suspicious email from external sender with credential harvesting link",
             "log_entries": [
                 {"timestamp": ts, "event": "email_received", "from": f"noreply@{sender_domain}", "to": f"{user}@company.com"},
                 {"timestamp": ts, "event": "link_clicked", "url": f"https://{sender_domain}/verify", "user": user},
@@ -357,49 +380,100 @@ def _inject_poison(payload: dict[str, Any]) -> dict[str, Any]:
     return poisoned
 
 
-# ── Gemini client ─────────────────────────────────────────────────────────────
+def _extract_first_json_object(text: str) -> str | None:
+    """Return the first complete top-level ``{...}`` object in ``text``.
+
+    Uses a brace-counting scan that respects string literals, so nested braces
+    and braces inside string values are handled correctly, and any prose the
+    model wraps around or appends after the JSON is ignored.  Returns ``None``
+    if no balanced object is found.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
 
 
-class GeminiClient:
-    """Client for generating security alerts via Gemini API.
+# ── Cloudflare Workers AI client ──────────────────────────────────────────────
 
-    Falls back to template-based generation when the API key is not
-    configured or the API call fails.
+
+class CloudflareGenerationError(RuntimeError):
+    """Raised when a live Cloudflare Workers AI request cannot produce an alert."""
+
+
+class CloudflareClient:
+    """Client for generating security alerts via Cloudflare Workers AI.
+
+    Template generation remains available for isolated development tests, but
+    live command-center runs can require a successful Cloudflare response.
     """
 
     def __init__(self) -> None:
-        self._api_key = settings.gemini_api_key
-        self._model_name = settings.gemini_model
-        self._client: Any = None
-
-        if self._api_key:
-            try:
-                from google.genai import Client
-
-                self._client = Client(api_key=self._api_key)
-            except ImportError:
-                pass
-            except Exception:  # noqa: BLE001
-                pass
+        self._api_token = settings.cloudflare_api_token
+        self._account_id = settings.cloudflare_account_id
+        self._model = settings.cloudflare_model or "@cf/meta/llama-3.1-8b-instruct"
+        self._max_tokens = settings.cloudflare_max_tokens or 512
+        self._session = requests.Session()
+        if self._api_token:
+            self._session.headers.update(
+                {"Authorization": f"Bearer {self._api_token}"}
+            )
 
     @property
     def available(self) -> bool:
-        """Whether the Gemini API client is ready."""
-        return self._client is not None
+        """Whether the Cloudflare Workers AI client is ready to make live calls."""
+        return bool(self._api_token and self._account_id)
 
-    def generate_alert(self, inject_poison: bool = False) -> dict[str, Any]:
+    def generate_alert(
+        self,
+        inject_poison: bool = False,
+        require_live: bool = False,
+    ) -> dict[str, Any]:
         """Generate one security alert dict.
 
-        Tries Gemini API first, falls back to templates on failure.
-        Optionally injects a poison variant.
+        ``require_live`` guarantees the alert originated from Cloudflare Workers
+        AI.  If Cloudflare is unavailable or returns invalid data, an error is
+        raised rather than silently substituting a scripted template alert.
         """
         alert_type = random.choice(_ALERT_TYPES)
 
-        if self._client is not None:
+        if self.available:
             try:
                 payload = self._generate_via_api(alert_type)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if require_live:
+                    raise CloudflareGenerationError(
+                        f"Cloudflare Workers AI could not generate a live alert "
+                        f"({type(exc).__name__}: {exc}); no template alert was created."
+                    ) from exc
+                logger.warning("Cloudflare generation failed (%s) — using template.", exc)
                 payload = _generate_from_template(alert_type)
+        elif require_live:
+            raise CloudflareGenerationError(
+                "Cloudflare Workers AI is unavailable; set CLOUDFLARE_API_TOKEN and "
+                "CLOUDFLARE_ACCOUNT_ID to start the live feed."
+            )
         else:
             payload = _generate_from_template(alert_type)
 
@@ -414,41 +488,100 @@ class GeminiClient:
         }
 
     def _generate_via_api(self, alert_type: str) -> dict[str, Any]:
-        """Call Gemini to generate an alert payload."""
-        from google.genai.types import GenerateContentConfig
+        """Call Cloudflare Workers AI to generate an alert payload.
 
+        Uses a concrete few-shot example rather than an abstract rule list.
+        Small instruct models (llama-3.1-8b) tend to echo rule text back or emit
+        Python-template pseudo-code (``f"10.0.{random.randint(...)}"``) when the
+        prompt is instruction-heavy, which yields unparseable output.  A single
+        worked example plus a low temperature makes the model emit concrete JSON.
+        """
+        now = datetime.now(timezone.utc)
+        t1 = (now - timedelta(minutes=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        t2 = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        example = (
+            "{\n"
+            '  "source_ip": "10.0.4.27",\n'
+            '  "destination_ip": "185.220.101.7",\n'
+            '  "description": "Large outbound transfer to a known Tor exit node",\n'
+            '  "protocol": "TCP",\n'
+            '  "network_zone": "server-tier",\n'
+            '  "hostname": "SRV-DB-01",\n'
+            '  "user": "svc_backup",\n'
+            '  "log_entries": [\n'
+            f'    {{"timestamp": "{t1}", "event": "connection opened", "src": "10.0.4.27", "dst": "185.220.101.7"}},\n'
+            f'    {{"timestamp": "{t2}", "event": "45 MB transferred outbound", "src": "10.0.4.27", "dst": "185.220.101.7"}}\n'
+            "  ],\n"
+            '  "iocs": ["185.220.101.7"]\n'
+            "}"
+        )
         prompt = (
-            "Generate a single realistic cybersecurity alert as JSON. "
-            f"Alert type: {alert_type}. "
-            "The JSON must have exactly these top-level keys:\n"
-            "  source_ip, destination_ip, description, log_entries (array of objects with timestamp/event/src/dst), "
-            "  network_zone, protocol (if network-related), iocs (array of strings), "
-            "  and 2-5 type-specific fields with realistic values.\n\n"
-            "Rules:\n"
-            "- Use realistic IPs (10.0.x.x for internal, varied public IPs for external)\n"
-            "- Timestamps in ISO 8601 format within the last hour\n"
-            "- Include 2-3 log entries that tell a coherent story\n"
-            "- Include realistic hostnames, usernames, process names\n"
-            "- The description should be a one-line summary\n"
-            "- Return ONLY valid JSON. No markdown, no code fences, no explanation.\n"
-            "- Do NOT include source_alert_id or alert_type in the JSON."
+            "You generate realistic cybersecurity alerts as strict JSON.\n\n"
+            f"Create ONE new alert of type \"{alert_type}\".\n"
+            f"Current UTC time is {now_str}; every timestamp must be within the last hour.\n\n"
+            "Use exactly this JSON shape, but with different values that fit the alert type:\n"
+            f"{example}\n\n"
+            "Output ONLY the JSON object itself. Every value must be a concrete literal "
+            "string, number, or array. Do not output any prose, markdown, code fences, "
+            "Python, template placeholders, or explanation before or after the JSON."
         )
 
-        response = self._client.models.generate_content(
-            model=self._model_name,
-            contents=prompt,
-            config=GenerateContentConfig(
-                temperature=0.9,
-                max_output_tokens=1024,
-                response_mime_type="application/json",
-            ),
+        url = (
+            f"https://api.cloudflare.com/client/v4/accounts/{self._account_id}"
+            f"/ai/run/{self._model}"
+        )
+        body = {"prompt": prompt, "max_tokens": self._max_tokens, "temperature": 0.4}
+
+        resp = post_with_backoff(
+            self._session, url, provider="cloudflare", json=body, stream=False, timeout=60
         )
 
-        text = response.text.strip()
+        if resp.status_code != 200:
+            raise CloudflareGenerationError(
+                f"Cloudflare Workers AI HTTP {resp.status_code}: {resp.text[:200]}"
+            )
 
-        # Strip markdown code fences if present
+        data = resp.json()
+        if not data.get("success", False):
+            errors = data.get("errors") or []
+            raise CloudflareGenerationError(f"Cloudflare Workers AI error: {errors}")
+
+        result = data.get("result") or {}
+        # Text-generation models return {"response": "..."}; some chat models
+        # return {"messages": [...]} — handle both defensively.
+        text = result.get("response")
+        if text is None and isinstance(result.get("messages"), list) and result["messages"]:
+            text = result["messages"][-1].get("content", "")
+        if not text:
+            raise CloudflareGenerationError("Cloudflare Workers AI returned an empty response.")
+
+        text = text.strip()
+        # Strip markdown code fences if present (```json ... ```).
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)
+            text = text.strip()
 
-        return json.loads(text)
+        # Extract the first complete, balanced JSON object.  Smaller instruct
+        # models often wrap the JSON in prose or append a trailing note, which
+        # breaks a naive json.loads with "Extra data" — the balanced scan plus
+        # raw_decode below tolerate both.
+        obj_text = _extract_first_json_object(text)
+        if obj_text is None:
+            raise CloudflareGenerationError(
+                f"Cloudflare Workers AI response contained no JSON object: {text[:200]!r}"
+            )
+
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(obj_text)
+        except json.JSONDecodeError as exc:
+            raise CloudflareGenerationError(
+                f"Cloudflare Workers AI returned unparseable JSON ({exc}): {obj_text[:200]!r}"
+            ) from exc
+
+        if not isinstance(payload, dict):
+            raise CloudflareGenerationError(
+                "Cloudflare Workers AI JSON was not an object."
+            )
+        return payload

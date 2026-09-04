@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import TypewriterText from './TypewriterText'
 
 /**
@@ -6,6 +7,9 @@ import TypewriterText from './TypewriterText'
  * and structured context (WHEN / WHERE / WHY / HOW).
  */
 export default function AgentPanel({ name, status, reasoning, verdict, confidence, extra, alertTime }) {
+  const [typewriterEnabled, setTypewriterEnabled] = useState(true)
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
   const isActive = status === 'thinking' || status === 'running'
   const isDone = status === 'complete'
 
@@ -88,8 +92,42 @@ export default function AgentPanel({ name, status, reasoning, verdict, confidenc
             </div>
 
             {/* Reasoning Box with Typewriter Effect */}
-            <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-950/80 text-xs text-slate-200 font-mono leading-relaxed whitespace-pre-wrap max-h-[300px] overflow-y-auto">
-              <TypewriterText text={reasoning || 'Agent reasoning processing complete.'} speed={6} />
+            <div className={`p-3.5 rounded-xl border border-slate-800 bg-slate-950/80 text-xs text-slate-200 font-mono leading-relaxed whitespace-pre-wrap overflow-y-auto ${expanded ? 'max-h-[600px]' : 'max-h-[300px]'}`}>
+              {typewriterEnabled ? (
+                <TypewriterText text={reasoning || 'Agent reasoning processing complete.'} speed={6} />
+              ) : (
+                reasoning || 'Agent reasoning processing complete.'
+              )}
+            </div>
+
+            {/* Reasoning Toolbar */}
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                onClick={() => setTypewriterEnabled(!typewriterEnabled)}
+                className="text-[10px] font-mono text-slate-500 hover:text-emerald-400 transition-colors"
+                title={typewriterEnabled ? 'Disable typewriter animation' : 'Enable typewriter animation'}
+              >
+                {typewriterEnabled ? '⚡ INSTANT' : '✍ TYPEWRITER'}
+              </button>
+              <span className="text-slate-700">│</span>
+              <button
+                onClick={() => setExpanded(!expanded)}
+                className="text-[10px] font-mono text-slate-500 hover:text-emerald-400 transition-colors"
+              >
+                {expanded ? 'COLLAPSE' : 'EXPAND'}
+              </button>
+              <span className="text-slate-700">│</span>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(reasoning || '').then(() => {
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 1500)
+                  })
+                }}
+                className="text-[10px] font-mono text-slate-500 hover:text-emerald-400 transition-colors"
+              >
+                {copied ? '✓ COPIED' : '📋 COPY'}
+              </button>
             </div>
 
             {/* MITRE ATT&CK Badges */}

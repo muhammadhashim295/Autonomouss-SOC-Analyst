@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.supabase_client import get_supabase
@@ -26,6 +26,26 @@ class AnalystDecisionRequest(BaseModel):
     decision: Literal["approved", "redirected", "self_acted"]
     analyst_action: Optional[str] = None
     analyst_reasoning: Optional[str] = None
+
+
+@router.get("/")
+async def list_cases(
+    status: Optional[str] = Query(None, description="Filter by action_status"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> list[dict[str, Any]]:
+    """List investigation cases, optionally filtered by action_status. Newest first."""
+    supabase = get_supabase()
+    query = (
+        supabase.table("cases")
+        .select("*, alerts:alert_id(id, source_alert_id, alert_type, raw_payload, received_at, status)")
+        .order("closed_at", desc=True)
+        .order("id", desc=True)
+    )
+    if status:
+        query = query.eq("action_status", status)
+    result = query.range(offset, offset + limit - 1).execute()
+    return result.data or []
 
 
 @router.post("/{case_id}/decision")
