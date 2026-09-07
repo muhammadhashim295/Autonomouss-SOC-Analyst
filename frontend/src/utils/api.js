@@ -39,12 +39,23 @@ function authHeaders(headers = {}) {
 // ── Auth API ──
 
 export async function login(email, password) {
-  const res = await fetch(`${BASE}/auth/login`, {
+  const url = `${BASE}/auth/login`
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   })
   if (!res.ok) {
+    if (res.status === 405) {
+      if (!BASE) {
+        throw new Error(
+          'Login failed (405): VITE_API_URL is not set or not baked into this Vercel build. Add VITE_API_URL in Vercel > Settings > Environment Variables, then trigger a Redeploy under the Deployments tab.'
+        )
+      }
+      throw new Error(
+        `Login failed (405 Method Not Allowed at ${url}). Ensure your backend URL uses https:// and matches your backend route.`
+      )
+    }
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || `Login failed: ${res.status}`)
   }

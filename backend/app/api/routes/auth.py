@@ -27,6 +27,7 @@ class LoginResponse(BaseModel):
 
 
 @router.post("/auth/login", response_model=LoginResponse)
+@router.post("/auth/login/", response_model=LoginResponse, include_in_schema=False)
 async def login(req: LoginRequest) -> LoginResponse:
     """Authenticate user with Supabase Auth, returning access token, profile and tenant org."""
     supabase = get_supabase()
