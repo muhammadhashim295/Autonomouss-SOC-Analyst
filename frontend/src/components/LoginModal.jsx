@@ -1,7 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth, PRESET_ACCOUNTS } from '../context/AuthContext'
-import { getBaseUrl, setCustomBackendUrl, testBackendHealth } from '../utils/api'
 
 export default function LoginModal() {
   const { isLoginModalOpen, setIsLoginModalOpen, login, quickSwitch, currentUser, logout, error, setError } = useAuth()
@@ -9,28 +8,6 @@ export default function LoginModal() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
-
-  // Backend URL configuration
-  const [backendUrl, setBackendUrl] = useState(getBaseUrl())
-  const [inputUrl, setInputUrl] = useState(getBaseUrl())
-  const [isConfigOpen, setIsConfigOpen] = useState(
-    !getBaseUrl() && typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
-  )
-  const [testingHealth, setTestingHealth] = useState(false)
-  const [healthFeedback, setHealthFeedback] = useState(null)
-
-  useEffect(() => {
-    const current = getBaseUrl()
-    if (!current || current.includes('your-backend')) {
-      const live = 'https://autonomouss-soc-analyst.onrender.com'
-      setCustomBackendUrl(live)
-      setBackendUrl(live)
-      setInputUrl(live)
-    } else {
-      setBackendUrl(current)
-      setInputUrl(current)
-    }
-  }, [isLoginModalOpen])
 
   if (!isLoginModalOpen) return null
 
@@ -63,51 +40,6 @@ export default function LoginModal() {
     }
   }
 
-  const handleSaveBackendUrl = async (overrideUrl = null) => {
-    setTestingHealth(true)
-    setHealthFeedback(null)
-    try {
-      const raw = (typeof overrideUrl === 'string' ? overrideUrl : inputUrl).trim()
-      let clean = raw.replace(/\/$/, '')
-      if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
-        clean = `https://${clean}`
-      }
-      if (clean.endsWith('.onrender.')) {
-        clean += 'com'
-      } else if (clean.endsWith('.onrender')) {
-        clean += '.com'
-      }
-      setInputUrl(clean)
-      const health = await testBackendHealth(clean)
-      setCustomBackendUrl(clean)
-      setBackendUrl(clean)
-      setHealthFeedback({
-        type: 'success',
-        text: `Connected! Backend online (${health.alerts_count || 0} alerts in database)`,
-      })
-      setTimeout(() => {
-        setIsConfigOpen(false)
-        setHealthFeedback(null)
-      }, 1500)
-    } catch (err) {
-      setHealthFeedback({
-        type: 'error',
-        text: `Connection failed: ${err.message}`,
-      })
-    } finally {
-      setTestingHealth(false)
-    }
-  }
-
-  const handleResetBackendUrl = () => {
-    const live = 'https://autonomouss-soc-analyst.onrender.com'
-    setCustomBackendUrl(live)
-    setInputUrl(live)
-    setBackendUrl(live)
-    setHealthFeedback({ type: 'info', text: 'Reset to live Render backend.' })
-    setTimeout(() => setHealthFeedback(null), 2000)
-  }
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
       <div className="relative w-full max-w-lg bg-[#070d18] border border-slate-700/80 rounded-2xl shadow-2xl p-6 overflow-hidden max-h-[95vh] overflow-y-auto">
@@ -123,7 +55,7 @@ export default function LoginModal() {
         </button>
 
         {/* Modal Title */}
-        <div className="mb-4">
+        <div className="mb-5">
           <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 mb-2">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             IAM & TENANT AUTHENTICATION
@@ -134,78 +66,6 @@ export default function LoginModal() {
           <p className="text-xs text-slate-400 font-mono mt-1">
             Authenticate to test strict Postgres Row Level Security (RLS) isolation between client organizations.
           </p>
-        </div>
-
-        {/* Backend Target Bar */}
-        <div className="mb-4 p-2.5 bg-slate-900/90 border border-slate-700/60 rounded-xl">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-[11px] font-mono truncate">
-              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${backendUrl ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]' : 'bg-amber-400 animate-pulse'}`} />
-              <span className="text-slate-400">Backend API:</span>
-              <span className="text-emerald-300 font-semibold truncate max-w-[190px]" title={backendUrl || 'Vite Proxy (localhost)'}>
-                {backendUrl || '(Vite Proxy - Localhost)'}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setIsConfigOpen(!isConfigOpen)}
-              className="text-[10px] font-mono text-cyan-400 hover:text-cyan-300 underline cursor-pointer ml-2 flex-shrink-0"
-            >
-              {isConfigOpen ? 'Hide' : 'Configure URL'}
-            </button>
-          </div>
-
-          {isConfigOpen && (
-            <div className="mt-2.5 pt-2.5 border-t border-slate-800 space-y-2">
-              <p className="text-[10px] font-mono text-slate-400">
-                Enter your deployed backend URL (e.g. Render/Railway). Saved directly in your browser with zero rebuilds required:
-              </p>
-              <div className="flex gap-1.5">
-                <input
-                  type="text"
-                  value={inputUrl}
-                  onChange={(e) => setInputUrl(e.target.value)}
-                  placeholder="https://your-soc-backend.onrender.com"
-                  className="flex-1 px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
-                />
-                <button
-                  type="button"
-                  onClick={handleSaveBackendUrl}
-                  disabled={testingHealth || !inputUrl}
-                  className="px-3 py-1.5 bg-cyan-500/20 border border-cyan-500/40 hover:bg-cyan-500/30 text-cyan-300 rounded-lg text-xs font-mono font-semibold transition disabled:opacity-50 cursor-pointer"
-                >
-                  {testingHealth ? 'Testing...' : 'Connect'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleResetBackendUrl}
-                  className="px-2 py-1.5 bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-mono transition cursor-pointer"
-                  title="Reset to default"
-                >
-                  ↺
-                </button>
-              </div>
-              <div className="flex items-center gap-2 pt-0.5">
-                <span className="text-[10px] font-mono text-slate-500">Quick set:</span>
-                <button
-                  type="button"
-                  onClick={() => handleSaveBackendUrl('https://autonomouss-soc-analyst.onrender.com')}
-                  className="text-[10px] font-mono text-emerald-400 hover:text-emerald-300 underline cursor-pointer"
-                >
-                  ⚡ Use Verified Backend (autonomouss-soc-analyst.onrender.com)
-                </button>
-              </div>
-              {healthFeedback && (
-                <div className={`text-[10px] font-mono px-2 py-1 rounded ${
-                  healthFeedback.type === 'success' ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/30' :
-                  healthFeedback.type === 'error' ? 'bg-red-950/60 text-red-300 border border-red-500/30' :
-                  'bg-slate-800 text-slate-300'
-                }`}>
-                  {healthFeedback.text}
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Error Alert */}
