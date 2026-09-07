@@ -1,6 +1,34 @@
 {
   "rewrites": [
     {
+      "source": "/auth/:path*",
+      "destination": "https://autonomouss-soc-analyst.onrender.com/auth/:path*"
+    },
+    {
+      "source": "/organizations",
+      "destination": "https://autonomouss-soc-analyst.onrender.com/organizations"
+    },
+    {
+      "source": "/alerts/:path*",
+      "destination": "https://autonomouss-soc-analyst.onrender.com/alerts/:path*"
+    },
+    {
+      "source": "/cases/:path*",
+      "destination": "https://autonomouss-soc-analyst.onrender.com/cases/:path*"
+    },
+    {
+      "source": "/settings/:path*",
+      "destination": "https://autonomouss-soc-analyst.onrender.com/settings/:path*"
+    },
+    {
+      "source": "/memory/:path*",
+      "destination": "https://autonomouss-soc-analyst.onrender.com/memory/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://autonomouss-soc-analyst.onrender.com/health"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

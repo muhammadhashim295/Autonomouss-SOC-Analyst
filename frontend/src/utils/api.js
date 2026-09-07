@@ -11,7 +11,14 @@ export function getBaseUrl() {
       return saved.trim().replace(/\/$/, '')
     }
   }
-  return import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : ''
+  if (import.meta.env.VITE_API_URL && import.meta.env.VITE_API_URL.trim()) {
+    return import.meta.env.VITE_API_URL.trim().replace(/\/$/, '')
+  }
+  // Production fallback: If running on Vercel or any cloud domain, automatically default to the live Render backend
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return 'https://autonomouss-soc-analyst.onrender.com'
+  }
+  return ''
 }
 
 export function setCustomBackendUrl(url) {
