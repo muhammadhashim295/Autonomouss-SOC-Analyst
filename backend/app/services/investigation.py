@@ -304,6 +304,15 @@ def persist_case(
     # fail-safe (defaults to 'agentic' if the store is unreachable).
     from app.services.settings_store import get_mode
 
+    # Multi-tenancy: inherit org_id from the alert
+    org_id = None
+    try:
+        alert_res = supabase.table("alerts").select("org_id").eq("id", alert_id).limit(1).execute()
+        if alert_res.data:
+            org_id = alert_res.data[0].get("org_id")
+    except Exception:
+        pass
+
     case_row = {
         "alert_id": alert_id,
         "mode": get_mode(),
@@ -319,21 +328,19 @@ def persist_case(
         "primary_provider": primary_provider,
         "secondary_provider": secondary_provider,
     }
+    if org_id:
+        case_row["org_id"] = org_id
 
     try:
         result = supabase.table("cases").insert(case_row).execute()
     except Exception as exc:  # noqa: BLE001
-        # Migration 005 (provider columns) may not be applied yet.  Retry
-        # without them so the investigation still persists — provider
-        # provenance is still carried in the investigation_snapshot JSONB and
-        # in every SSE event / API response.  Run
-        # migrations/005_provider_columns.sql to enable the dedicated columns.
+        # If columns (provider columns from 005 or org_id from 006) are not yet
+        # applied, retry without them so the investigation still persists.
         logger.warning(
-            "Case insert with provider columns failed (%s); retrying without "
-            "them. Run migrations/005_provider_columns.sql to persist provider "
-            "columns.",
+            "Case insert failed (%s); retrying with compatibility fallback.",
             exc,
         )
+        case_row.pop("org_id", None)
         case_row.pop("primary_provider", None)
         case_row.pop("secondary_provider", None)
         result = supabase.table("cases").insert(case_row).execute()

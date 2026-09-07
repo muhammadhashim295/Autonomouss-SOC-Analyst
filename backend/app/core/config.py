@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     action_confidence_threshold: float = 0.7
 
     # ── CORS ──────────────────────────────────────────────────────────
-    cors_origins: str = "http://localhost:5173"
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
 
     @property
     def cors_origin_list(self) -> list[str]:

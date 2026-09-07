@@ -92,6 +92,8 @@ def _effective_verdict(
     if secondary_verdict == "disagree":
         return None, False
     if secondary_verdict in ("false_positive", "true_positive"):
+        if primary_verdict and secondary_verdict != primary_verdict:
+            return None, False
         return secondary_verdict, secondary_verdict == primary_verdict
     if secondary_verdict == "agree":
         return primary_verdict, True

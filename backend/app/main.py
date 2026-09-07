@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.alerts import router as alerts_router
+from app.api.routes.auth import router as auth_router
 from app.api.routes.cases import router as cases_router
 from app.api.routes.generate import router as generate_router
 from app.api.routes.memory import router as memory_router
@@ -32,6 +33,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
+    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,6 +41,7 @@ app.add_middleware(
 
 
 # Generate router must come before alerts router to avoid path-prefix conflicts
+app.include_router(auth_router)
 app.include_router(generate_router)
 app.include_router(alerts_router)
 app.include_router(settings_router)

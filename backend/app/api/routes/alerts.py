@@ -3,8 +3,9 @@
 import json
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.core.auth import CurrentUser, get_optional_user, get_scoped_supabase
 from app.core.firewall import check_alert, sanitize_snippet
 from app.db.supabase_client import get_supabase
 from app.models.schemas import AlertCreate, AlertResponse, ReinvestigateRequest
@@ -24,14 +25,21 @@ router = APIRouter(prefix="/alerts", tags=["alerts"])
 
 
 @router.post("/", response_model=AlertResponse, status_code=201)
-async def ingest_alert(alert: AlertCreate) -> AlertResponse:
+async def ingest_alert(
+    alert: AlertCreate,
+    current_user: Optional[CurrentUser] = Depends(get_optional_user),
+) -> AlertResponse:
     """Ingest a new alert into the system.
 
     The log-poisoning **firewall** runs first (real code, not prompt-level).
     Flagged alerts are **never dropped** — they are always inserted into
     ``alerts`` *and* recorded in ``firewall_flags``.
+    Tenant org_id is automatically assigned for authenticated client users.
     """
-    client = get_supabase()
+    if current_user and current_user.is_client and current_user.org_id:
+        alert.org_id = current_user.org_id
+
+    client = get_scoped_supabase(current_user) if current_user else get_supabase()
 
     # 1. Firewall — scan before any agent would see this
     flags = check_alert(
@@ -42,26 +50,46 @@ async def ingest_alert(alert: AlertCreate) -> AlertResponse:
 
     # 2. Insert alert (always, even if flagged)
     data = alert.model_dump(mode="json")
-    result = client.table("alerts").insert(data).execute()
+    if not data.get("org_id"):
+        data.pop("org_id", None)
+
+    try:
+        result = client.table("alerts").insert(data).execute()
+    except Exception as exc:
+        # Fallback if org_id column not added yet
+        if "org_id" in data:
+            data.pop("org_id", None)
+            result = client.table("alerts").insert(data).execute()
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to insert alert: {exc}") from exc
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to insert alert")
 
     inserted = result.data[0]
     alert_id = inserted["id"]
+    assigned_org_id = inserted.get("org_id")
 
     # 3. Write firewall flags (if any)
     if flags:
         raw_json = json.dumps(alert.raw_payload, ensure_ascii=False)
-        flag_rows = [
-            {
+        flag_rows = []
+        for reason in flags:
+            f_row = {
                 "alert_id": alert_id,
                 "flag_reason": reason,
                 "raw_snippet": sanitize_snippet(raw_json),
             }
-            for reason in flags
-        ]
-        client.table("firewall_flags").insert(flag_rows).execute()
+            if assigned_org_id:
+                f_row["org_id"] = assigned_org_id
+            flag_rows.append(f_row)
+
+        try:
+            client.table("firewall_flags").insert(flag_rows).execute()
+        except Exception:
+            for f_row in flag_rows:
+                f_row.pop("org_id", None)
+            client.table("firewall_flags").insert(flag_rows).execute()
 
     return AlertResponse(**inserted)
 
@@ -69,37 +97,51 @@ async def ingest_alert(alert: AlertCreate) -> AlertResponse:
 @router.get("/", response_model=list[AlertResponse])
 async def list_alerts(
     status: Optional[str] = Query(None, description="Filter by status: pending, in_review, closed"),
+    org_id: Optional[str] = Query(None, description="Filter by organization UUID"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    current_user: Optional[CurrentUser] = Depends(get_optional_user),
 ) -> list[AlertResponse]:
-    """List alerts, optionally filtered by status.  Newest first."""
-    client = get_supabase()
+    """List alerts, optionally filtered by status and tenant org. Newest first."""
+    client = get_scoped_supabase(current_user) if current_user else get_supabase()
 
     query = client.table("alerts").select("*").order("received_at", desc=True)
 
     if status:
         query = query.eq("status", status)
 
+    if current_user and current_user.is_client and current_user.org_id:
+        query = query.eq("org_id", current_user.org_id)
+    elif org_id:
+        query = query.eq("org_id", org_id)
+
     result = query.range(offset, offset + limit - 1).execute()
 
-    return [AlertResponse(**row) for row in result.data]
+    return [AlertResponse(**row) for row in (result.data or [])]
 
 
 @router.get("/firewall-flags")
 async def list_firewall_flags(
     alert_id: Optional[str] = Query(None, description="Filter by alert UUID"),
+    org_id: Optional[str] = Query(None, description="Filter by org UUID"),
     limit: int = Query(50, ge=1, le=200),
+    current_user: Optional[CurrentUser] = Depends(get_optional_user),
 ) -> list[dict]:
-    """List firewall flags.  Useful for the dashboard and for testing."""
-    client = get_supabase()
+    """List firewall flags. Useful for the dashboard and for testing."""
+    client = get_scoped_supabase(current_user) if current_user else get_supabase()
 
     query = client.table("firewall_flags").select("*").order("created_at", desc=True)
 
     if alert_id:
         query = query.eq("alert_id", alert_id)
 
+    if current_user and current_user.is_client and current_user.org_id:
+        query = query.eq("org_id", current_user.org_id)
+    elif org_id:
+        query = query.eq("org_id", org_id)
+
     result = query.limit(limit).execute()
-    return result.data
+    return result.data or []
 
 
 @router.get("/{alert_id}/enrich")

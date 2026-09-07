@@ -33,9 +33,10 @@ import queue
 import threading
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.core.auth import CurrentUser, get_optional_user
 from app.db.supabase_client import get_supabase
 from app.services.investigation_stream import run_dual_agent_stream
 
@@ -48,7 +49,10 @@ _HEARTBEAT_SECONDS = 15.0
 
 
 @router.post("/{alert_id}/investigate/stream")
-async def stream_investigation(alert_id: str) -> StreamingResponse:
+async def stream_investigation(
+    alert_id: str,
+    current_user: Optional[CurrentUser] = Depends(get_optional_user),
+) -> StreamingResponse:
     """Stream a full dual-agent investigation as live SSE events."""
     client = get_supabase()
 
@@ -56,6 +60,13 @@ async def stream_investigation(alert_id: str) -> StreamingResponse:
     if not result.data:
         raise HTTPException(status_code=404, detail="Alert not found")
     alert = result.data[0]
+
+    if current_user and current_user.is_client and current_user.org_id:
+        if alert.get("org_id") and str(alert.get("org_id")) != str(current_user.org_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Forbidden: You do not have access to this tenant's alert.",
+            )
 
     client.table("alerts").update({"status": "in_review"}).eq(
         "id", alert_id

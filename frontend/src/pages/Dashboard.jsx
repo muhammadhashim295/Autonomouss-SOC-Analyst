@@ -1,11 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { startLiveFeed } from '../utils/api'
+import OrgSwitcher from '../components/OrgSwitcher'
+import { useAuth } from '../context/AuthContext'
 
 const clients = [
   {
     name: 'UBL Digital Bank',
     shortName: 'UBL',
+    orgCode: 'UBL',
     sector: 'FINANCIAL SECTOR',
     description: 'United Bank Limited — SBP Regulated Core Banking Infrastructure',
     code: 'UBL-FIN-SEC01',
@@ -16,6 +19,7 @@ const clients = [
   {
     name: 'Indus Health Network',
     shortName: 'Indus Hospital',
+    orgCode: 'INDUS',
     sector: 'HEALTHCARE SECTOR',
     description: 'Indus Hospital & Health Network — Patient Data & EMR Infrastructure',
     code: 'IHHN-HLT-SEC02',
@@ -26,6 +30,7 @@ const clients = [
   {
     name: 'Sindh Madressatul Islam',
     shortName: 'SMIU',
+    orgCode: 'SMIU',
     sector: 'EDUCATION SECTOR',
     description: 'Sindh Madressatul Islam University — Academic Research & Student Portal',
     code: 'SMIU-EDU-SEC03',
@@ -37,8 +42,31 @@ const clients = [
 
 export default function Dashboard() {
   const navigate = useNavigate()
+  const { currentUser, selectedOrgId, organizations } = useAuth()
   const [loading, setLoading] = useState(null)
   const [error, setError] = useState(null)
+
+  // Determine user tenant role
+  const isClient = currentUser?.role === 'client' || currentUser?.is_client
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.is_admin
+  const clientOrgCode = currentUser?.org_code ? currentUser.org_code.toUpperCase() : null
+
+  // Dynamic client filtering based on authentication & multi-tenant role
+  let visibleClients = clients
+
+  if (isClient && clientOrgCode) {
+    // Client user: STRICTLY ONLY see their own organization's dashboard card
+    visibleClients = clients.filter((c) => c.orgCode.toUpperCase() === clientOrgCode)
+  } else if (isAdmin) {
+    // Admin user: if a specific organization is filtered in the OrgSwitcher, show that org;
+    // otherwise show all 3 organizations for complete cross-tenant visibility!
+    if (selectedOrgId && selectedOrgId !== 'ALL') {
+      const selectedOrg = organizations.find((o) => o.id === selectedOrgId || o.code === selectedOrgId)
+      if (selectedOrg) {
+        visibleClients = clients.filter((c) => c.orgCode.toUpperCase() === selectedOrg.code.toUpperCase())
+      }
+    }
+  }
 
   const handleTrack = async (client) => {
     setLoading(client.shortName)
@@ -55,6 +83,26 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#04070d] cyber-grid-bg flex flex-col items-center justify-center p-6 relative overflow-hidden">
       
+      {/* Top Bar with Org Switcher and Back to Portal */}
+      <div className="w-full max-w-6xl mb-6 flex flex-wrap justify-between items-center gap-4 relative z-20">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate('/')}
+            className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 hover:border-emerald-500/50 hover:bg-slate-800 text-slate-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition cursor-pointer"
+          >
+            <span>←</span>
+            <span>PUBLIC PORTAL</span>
+          </button>
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+            <span className="font-mono text-xs font-bold text-slate-300 tracking-wider">
+              CROSS-TENANT SECURITY FABRIC
+            </span>
+          </div>
+        </div>
+        <OrgSwitcher />
+      </div>
+
       {/* Background Ambient Glows */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[350px] bg-emerald-500/10 blur-[140px] pointer-events-none rounded-full" />
       <div className="absolute bottom-10 right-10 w-[400px] h-[300px] bg-cyan-500/10 blur-[120px] pointer-events-none rounded-full" />
@@ -82,9 +130,47 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Multi-Tenant Status Banner */}
+      {isClient && visibleClients.length > 0 && (
+        <div className="w-full max-w-4xl mb-6 px-4 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-mono text-xs flex flex-wrap items-center justify-between gap-3 shadow-[0_0_20px_rgba(16,185,129,0.15)] animate-fade-in relative z-10">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+            <span>
+              AUTHENTICATED CLIENT ENCLAVE: <strong className="text-white">{currentUser?.org_name || visibleClients[0].name}</strong> ({currentUser?.email})
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] uppercase font-bold tracking-wider">
+              POSTGRES RLS LOCKED
+            </span>
+            <span className="text-[10px] text-slate-400">Isolated Tenant Environment</span>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="w-full max-w-6xl mb-6 px-4 py-3 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-300 font-mono text-xs flex flex-wrap items-center justify-between gap-3 shadow-[0_0_20px_rgba(147,51,234,0.15)] animate-fade-in relative z-10">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-purple-400 animate-pulse" />
+            <span>
+              GLOBAL SOC SUPER ADMIN: <strong className="text-white">{currentUser?.email || 'admin@soc.local'}</strong> • Cross-Tenant Oversight ({visibleClients.length} of 3 Enclaves Visible)
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] uppercase font-bold tracking-wider">
+              FULL CROSS-ORG PRIVILEGES
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Client Command Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-6xl w-full relative z-10">
-        {clients.map((client, i) => (
+      <div className={`w-full relative z-10 ${
+        visibleClients.length === 1
+          ? 'max-w-xl mx-auto'
+          : 'grid grid-cols-1 md:grid-cols-3 gap-6 max-w-6xl'
+      }`}>
+        {visibleClients.map((client, i) => (
           <div
             key={client.shortName}
             className="animate-slide-up"

@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from app.core.auth import CurrentUser, get_optional_user, get_scoped_supabase
 from app.db.supabase_client import get_supabase
 from app.services.analyst_decisions import DecisionError, apply_analyst_decision
 
@@ -31,19 +32,27 @@ class AnalystDecisionRequest(BaseModel):
 @router.get("/")
 async def list_cases(
     status: Optional[str] = Query(None, description="Filter by action_status"),
+    org_id: Optional[str] = Query(None, description="Filter by organization UUID"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    current_user: Optional[CurrentUser] = Depends(get_optional_user),
 ) -> list[dict[str, Any]]:
-    """List investigation cases, optionally filtered by action_status. Newest first."""
-    supabase = get_supabase()
+    """List investigation cases, optionally filtered by action_status and tenant. Newest first."""
+    supabase = get_scoped_supabase(current_user) if current_user else get_supabase()
     query = (
         supabase.table("cases")
-        .select("*, alerts:alert_id(id, source_alert_id, alert_type, raw_payload, received_at, status)")
+        .select("*, alerts:alert_id(id, source_alert_id, alert_type, raw_payload, received_at, status, org_id)")
         .order("closed_at", desc=True)
         .order("id", desc=True)
     )
     if status:
         query = query.eq("action_status", status)
+
+    if current_user and current_user.is_client and current_user.org_id:
+        query = query.eq("org_id", current_user.org_id)
+    elif org_id:
+        query = query.eq("org_id", org_id)
+
     result = query.range(offset, offset + limit - 1).execute()
     return result.data or []
 
@@ -52,6 +61,7 @@ async def list_cases(
 async def submit_decision(
     case_id: str,
     request: AnalystDecisionRequest,
+    current_user: Optional[CurrentUser] = Depends(get_optional_user),
 ) -> dict[str, Any]:
     """Record an analyst decision on a paused/escalated case.
 
@@ -81,19 +91,27 @@ async def submit_decision(
 
 
 @router.get("/{case_id}")
-async def get_case(case_id: str) -> dict[str, Any]:
+async def get_case(
+    case_id: str,
+    current_user: Optional[CurrentUser] = Depends(get_optional_user),
+) -> dict[str, Any]:
     """Full case detail — everything the escalation/case screen needs.
 
     Returns the case row (with parsed investigation snapshot), the alert,
     any analyst overrides, firewall flags on the alert, and the memory
     record written for this case.
     """
-    supabase = get_supabase()
+    supabase = get_scoped_supabase(current_user) if current_user else get_supabase()
 
     case_rows = supabase.table("cases").select("*").eq("id", case_id).limit(1).execute()
     if not case_rows.data:
         raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
     case = case_rows.data[0]
+
+    # Verify tenant isolation for client users
+    if current_user and current_user.is_client and current_user.org_id:
+        if case.get("org_id") and str(case.get("org_id")) != str(current_user.org_id):
+            raise HTTPException(status_code=403, detail="Forbidden: You do not have access to this tenant's case.")
 
     alert = None
     if case.get("alert_id"):

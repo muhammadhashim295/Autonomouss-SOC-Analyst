@@ -23,8 +23,16 @@ export function useSSE(alertId, onEvent) {
 
     const stream = async () => {
       try {
-        const res = await fetch(`/alerts/${alertId}/investigate/stream`, {
+        const token = localStorage.getItem('soc_access_token')
+        const headers = {}
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`
+        }
+
+        const baseUrl = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : ''
+        const res = await fetch(`${baseUrl}/alerts/${alertId}/investigate/stream`, {
           method: 'POST',
+          headers,
           signal: controller.signal,
         })
         if (!res.ok) {
@@ -35,6 +43,7 @@ export function useSSE(alertId, onEvent) {
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
+        let eventName = null
 
         while (true) {
           const { done, value } = await reader.read()
@@ -44,7 +53,6 @@ export function useSSE(alertId, onEvent) {
           const lines = buffer.split('\n')
           buffer = lines.pop() // keep incomplete line in buffer
 
-          let eventName = null
           for (const line of lines) {
             if (line.startsWith('event: ')) {
               eventName = line.slice(7).trim()

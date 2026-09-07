@@ -168,6 +168,7 @@ def apply_analyst_decision(
     )
 
     # 3. Write the analyst_overrides row (the audit trail of the override)
+    org_id = case.get("org_id") or alert.get("org_id")
     override_row = {
         "case_id": case_id,
         "original_suggestion": suggested.get("action", "none"),
@@ -175,9 +176,22 @@ def apply_analyst_decision(
         "analyst_action": analyst_action,
         "analyst_reasoning": analyst_reasoning,
     }
-    override_result = (
-        supabase.table("analyst_overrides").insert(override_row).execute()
-    )
+    if org_id:
+        override_row["org_id"] = org_id
+
+    try:
+        override_result = (
+            supabase.table("analyst_overrides").insert(override_row).execute()
+        )
+    except Exception as exc:
+        logger.warning(
+            "Insert analyst_overrides with org_id failed (%s); retrying without it.",
+            exc,
+        )
+        override_row.pop("org_id", None)
+        override_result = (
+            supabase.table("analyst_overrides").insert(override_row).execute()
+        )
 
     # 4. Resolve the action
     action_record = _analyst_action_record(

@@ -6,6 +6,8 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
+      '/auth': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/organizations': { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/alerts': { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/settings': { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/cases': { target: 'http://127.0.0.1:8000', changeOrigin: true },

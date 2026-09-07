@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import time
+import itertools
 from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
@@ -38,6 +39,7 @@ class _GeneratorState:
         self.duration_seconds: int = 120
         self.interval_seconds: int = settings.live_feed_interval_seconds
         self.poison_ratio: float = settings.live_feed_poison_ratio
+        self.org_id: Optional[str] = None
         self.last_error: Optional[str] = None
         self._task: Optional[asyncio.Task[None]] = None
 
@@ -63,6 +65,7 @@ class _GeneratorState:
             "estimated_seconds_left": remaining,
             "poison_ratio": self.poison_ratio,
             "interval_seconds": self.interval_seconds,
+            "org_id": self.org_id,
             "generator": "cloudflare",
             "last_error": self.last_error,
         }
@@ -81,16 +84,29 @@ def start_generation(
     duration_seconds: int = 120,
     interval_seconds: Optional[int] = None,
     poison_ratio: Optional[float] = None,
+    org_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Start a new alert generation run.
+    """Start a new alert generation run or return the current run if already active.
 
-    Returns the run details.  The actual generation happens in an asyncio
-    background task — this function returns immediately.  ``interval_seconds``
-    defaults to ``settings.live_feed_interval_seconds`` (3s) and ``poison_ratio``
-    to ``settings.live_feed_poison_ratio`` (~15%).
+    Returns the run details. The actual generation happens in an asyncio
+    background task — this function returns immediately.
     """
+    from app.services import pregenerated_store
+
+    use_pregenerated = pregenerated_store.is_available()
+
     if _state.active:
-        raise RuntimeError("A generation run is already active")
+        logger.info("Generation run %s is already active; returning current active run state.", _state.run_id)
+        return {
+            "status": "running",
+            "run_id": _state.run_id,
+            "duration_seconds": _state.duration_seconds,
+            "interval_seconds": _state.interval_seconds,
+            "poison_ratio": _state.poison_ratio,
+            "org_id": _state.org_id,
+            "started_at": _state.started_at.isoformat() if _state.started_at else datetime.now(timezone.utc).isoformat(),
+            "generator": "pregenerated" if use_pregenerated else "cloudflare",
+        }
 
     interval_seconds = (
         settings.live_feed_interval_seconds if interval_seconds is None else interval_seconds
@@ -99,14 +115,14 @@ def start_generation(
         settings.live_feed_poison_ratio if poison_ratio is None else poison_ratio
     )
 
-    if not CloudflareClient().available:
+    if not use_pregenerated and not CloudflareClient().available:
         raise CloudflareGenerationError(
-            "Cloudflare Workers AI is unavailable; set CLOUDFLARE_API_TOKEN and "
-            "CLOUDFLARE_ACCOUNT_ID. No scripted alerts will be generated."
+            "Neither pre-generated scenarios nor Cloudflare Workers AI is available; set CLOUDFLARE_API_TOKEN and "
+            "CLOUDFLARE_ACCOUNT_ID to generate alerts."
         )
 
     run_id = str(uuid4())[:8]
-    # The first Cloudflare request runs immediately, then repeats per interval.
+    # The first alert runs immediately, then repeats per interval.
     total_planned = max(1, (duration_seconds + interval_seconds - 1) // interval_seconds)
 
     _state.active = True
@@ -119,6 +135,7 @@ def start_generation(
     _state.duration_seconds = duration_seconds
     _state.interval_seconds = interval_seconds
     _state.poison_ratio = poison_ratio
+    _state.org_id = org_id
     _state.last_error = None
 
     # Launch the background asyncio task
@@ -134,7 +151,7 @@ def start_generation(
         "poison_ratio": poison_ratio,
         "estimated_alerts": total_planned,
         "started_at": _state.started_at.isoformat(),
-        "generator": "cloudflare",
+        "generator": "pregenerated" if use_pregenerated else "cloudflare",
     }
 
 
@@ -209,6 +226,9 @@ async def _generate_loop(
         concurrency,
     )
 
+    from app.services import pregenerated_store
+    use_pregenerated = pregenerated_store.is_available()
+
     async def _worker(worker_id: int) -> None:
         """Continuously generate alerts into the queue until stopped."""
         while not stop_workers.is_set() and _state.active:
@@ -216,11 +236,15 @@ async def _generate_loop(
                 break
             should_poison = random.random() < poison_ratio
             try:
-                alert_data = await asyncio.to_thread(
-                    cloudflare.generate_alert,
-                    inject_poison=should_poison,
-                    require_live=True,
-                )
+                if use_pregenerated:
+                    alert_data = pregenerated_store.get_next_live_alert(inject_poison=should_poison)
+                    await asyncio.sleep(0.05)
+                else:
+                    alert_data = await asyncio.to_thread(
+                        cloudflare.generate_alert,
+                        inject_poison=should_poison,
+                        require_live=True,
+                    )
             except asyncio.CancelledError:
                 raise
             except CloudflareGenerationError as exc:
@@ -238,6 +262,22 @@ async def _generate_loop(
             await queue.put((alert_data, should_poison))
 
     workers = [asyncio.create_task(_worker(i)) for i in range(concurrency)]
+
+    # Multi-tenant scoping: resolve organizations for round-robin or fixed org
+    org_ids: list[str] = []
+    if _state.org_id:
+        org_ids = [_state.org_id]
+    else:
+        try:
+            org_res = await asyncio.to_thread(
+                supabase.table("organizations").select("id").execute
+            )
+            if org_res.data:
+                org_ids = [r["id"] for r in org_res.data]
+        except Exception:
+            org_ids = []
+
+    org_cycle = itertools.cycle(org_ids) if org_ids else None
 
     try:
         while _state.active and datetime.now(timezone.utc).timestamp() < end_time:
@@ -272,6 +312,8 @@ async def _generate_loop(
                 if flags:
                     _state.firewall_caught += 1
 
+                target_org_id = next(org_cycle) if org_cycle else None
+
                 # Insert alert into Supabase (blocking call kept off the loop)
                 alert_row = {
                     "source_alert_id": alert_data["source_alert_id"],
@@ -279,12 +321,25 @@ async def _generate_loop(
                     "raw_payload": alert_data["raw_payload"],
                     "status": "pending",
                 }
-                result = await asyncio.to_thread(
-                    supabase.table("alerts").insert(alert_row).execute
-                )
+                if target_org_id:
+                    alert_row["org_id"] = target_org_id
+
+                try:
+                    result = await asyncio.to_thread(
+                        supabase.table("alerts").insert(alert_row).execute
+                    )
+                except Exception:
+                    if "org_id" in alert_row:
+                        alert_row.pop("org_id", None)
+                        result = await asyncio.to_thread(
+                            supabase.table("alerts").insert(alert_row).execute
+                        )
+                    else:
+                        raise
 
                 if result.data:
                     alert_id = result.data[0]["id"]
+                    assigned_org = result.data[0].get("org_id") or target_org_id
                     _state.alerts_generated += 1
 
                     # Write firewall flags if any
@@ -297,19 +352,28 @@ async def _generate_loop(
                                 "alert_id": alert_id,
                                 "flag_reason": reason,
                                 "raw_snippet": sanitize_snippet(raw_json),
+                                **({"org_id": assigned_org} if assigned_org else {}),
                             }
                             for reason in flags
                         ]
-                        await asyncio.to_thread(
-                            supabase.table("firewall_flags").insert(flag_rows).execute
-                        )
+                        try:
+                            await asyncio.to_thread(
+                                supabase.table("firewall_flags").insert(flag_rows).execute
+                            )
+                        except Exception:
+                            for f in flag_rows:
+                                f.pop("org_id", None)
+                            await asyncio.to_thread(
+                                supabase.table("firewall_flags").insert(flag_rows).execute
+                            )
 
                     logger.info(
-                        "Alert %s [%s] inserted (poison=%s, flagged=%d)",
+                        "Alert %s [%s] inserted (poison=%s, flagged=%d, org=%s)",
                         alert_data["source_alert_id"],
                         alert_data["alert_type"],
                         should_poison,
                         len(flags),
+                        assigned_org,
                     )
                 else:
                     logger.warning("Failed to insert alert into Supabase")

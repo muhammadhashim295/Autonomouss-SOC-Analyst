@@ -34,9 +34,12 @@ Event vocabulary (``{"event": name, "data": {...}}``):
 from __future__ import annotations
 
 import logging
+import re
+import time
 from typing import Any, Iterator
 
 from app.db.supabase_client import get_supabase
+from app.services import pregenerated_store
 from app.services.actions import decide_and_execute_action
 from app.services.cerebras_client import CerebrasClientError, get_cerebras_client
 from app.services.groq_client import GroqClientError, get_groq_client
@@ -67,27 +70,247 @@ def _run_skills(alert_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _tokenize_for_streaming(text: str) -> list[str]:
+    """Tokenize text into readable words/chunks for typewriter streaming simulation."""
+    tokens = re.findall(r"\S+|\s+", text)
+    chunks: list[str] = []
+    i = 0
+    while i < len(tokens):
+        if i + 1 < len(tokens) and tokens[i + 1].isspace():
+            chunks.append(tokens[i] + tokens[i + 1])
+            i += 2
+        else:
+            chunks.append(tokens[i])
+            i += 1
+    return chunks
+
+
 def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
     """Full dual-agent investigation as a live event stream (Phase 14).
 
-    The Primary Agent (Groq) investigates and its case is persisted; the
-    Secondary Agent (Cerebras) independently re-derives with fresh skills;
-    then the enforced action pipeline decides/executes.  Every stage is
-    yielded as ``{"event": ..., "data": ...}`` the moment it happens —
-    ``agent_delta`` events carry each agent's reasoning live, token by token.
-
-    Exceptions propagate to the caller (the SSE layer converts them into
-    an ``investigation_error`` event and reverts the alert).
+    When pre-generated scenarios are available, streams pre-computed high-fidelity
+    dual-agent reasoning chains word-by-word via SSE (with real Supabase case persistence,
+    real memory lookups, and real enforced action execution). When unavailable, falls
+    back seamlessly to live Groq and Cerebras client sessions.
     """
-    # One provider per role — hardwired, no toggle.
+    alert_id = alert["id"]
+    alert_type = alert.get("alert_type", "unknown")
+    payload = alert.get("raw_payload", {})
+
+    # ── Check for pre-generated scenario match ─────────────────────────
+    if pregenerated_store.is_available():
+        scenario = pregenerated_store.find_scenario_for_alert(alert)
+        if scenario:
+            primary_data = scenario.get("primary", {})
+            secondary_data = scenario.get("secondary", {})
+            primary_provider = primary_data.get("provider", "groq")
+            secondary_provider = secondary_data.get("provider", "cerebras")
+
+            yield {
+                "event": "investigation_started",
+                "data": {
+                    "alert_id": alert_id,
+                    "source_alert_id": alert.get("source_alert_id"),
+                    "alert_type": alert_type,
+                    "primary_provider": primary_provider,
+                    "secondary_provider": secondary_provider,
+                },
+            }
+
+            # 1. Primary Agent Memory & Enrichment (Real Supabase memory lookup!)
+            similar_cases = retrieve_similar_cases(
+                alert_type,
+                payload,
+                exclude_source_alert_id=alert.get("source_alert_id"),
+            )
+            yield {
+                "event": "memory_retrieved",
+                "data": {"agent": "primary", "similar_cases": similar_cases},
+            }
+
+            enrichment = scenario.get("enrichment") or _run_skills(alert_type, payload)
+            impact_level = scenario.get("impact_level") or classify_impact(alert_type, payload)
+            yield {
+                "event": "enrichment_complete",
+                "data": {
+                    "agent": "primary",
+                    "enrichment": enrichment,
+                    "impact_level": impact_level,
+                },
+            }
+
+            session_id = f"sim-primary-{alert_id[:8]}"
+            yield {
+                "event": "agent_started",
+                "data": {
+                    "agent": "primary",
+                    "session_id": session_id,
+                    "provider": primary_provider,
+                },
+            }
+
+            primary_text = primary_data.get("agent_report", "")
+            primary_parsed = primary_data.get("parsed", {})
+            if not primary_parsed and primary_text:
+                primary_parsed = parse_agent_response(primary_text)
+
+            # Stream primary reasoning word-by-word (natural LLM typing effect)
+            for chunk in _tokenize_for_streaming(primary_text):
+                time.sleep(0.018)
+                yield {
+                    "event": "agent_delta",
+                    "data": {"agent": "primary", "text": chunk},
+                }
+
+            yield {
+                "event": "agent_complete",
+                "data": {
+                    "agent": "primary",
+                    "provider": primary_provider,
+                    "verdict": primary_parsed.get("verdict"),
+                    "confidence": primary_parsed.get("confidence"),
+                    "reasoning": primary_parsed.get("reasoning", ""),
+                    "attack_technique": primary_parsed.get("attack_technique"),
+                },
+            }
+
+            # Persist real case to Supabase database
+            case = persist_case(
+                alert_id=alert_id,
+                parsed=primary_parsed,
+                enrichment=enrichment,
+                impact_level=impact_level,
+                primary_provider=primary_provider,
+                secondary_provider=secondary_provider,
+            )
+            yield {"event": "case_persisted", "data": {"case_id": case["id"]}}
+
+            # 2. Secondary Agent (Cerebras independent re-derivation)
+            sec_similar = retrieve_similar_cases(
+                alert_type,
+                payload,
+                exclude_source_alert_id=alert.get("source_alert_id"),
+            )
+            yield {
+                "event": "memory_retrieved",
+                "data": {"agent": "secondary", "similar_cases": sec_similar},
+            }
+
+            sec_enrichment = scenario.get("enrichment") or _run_skills(alert_type, payload)
+            yield {
+                "event": "enrichment_complete",
+                "data": {"agent": "secondary", "enrichment": sec_enrichment},
+            }
+
+            sec_session_id = f"sim-secondary-{alert_id[:8]}"
+            yield {
+                "event": "agent_started",
+                "data": {
+                    "agent": "secondary",
+                    "session_id": sec_session_id,
+                    "provider": secondary_provider,
+                },
+            }
+
+            secondary_text = secondary_data.get("agent_report", "")
+            secondary_parsed = secondary_data.get("parsed", {})
+            if not secondary_parsed and secondary_text:
+                secondary_parsed = parse_agent_response(secondary_text)
+
+            # Stream secondary reasoning word-by-word
+            for chunk in _tokenize_for_streaming(secondary_text):
+                time.sleep(0.018)
+                yield {
+                    "event": "agent_delta",
+                    "data": {"agent": "secondary", "text": chunk},
+                }
+
+            secondary_verdict = secondary_parsed.get("secondary_verdict") or secondary_parsed.get("verdict")
+            yield {
+                "event": "agent_complete",
+                "data": {
+                    "agent": "secondary",
+                    "provider": secondary_provider,
+                    "secondary_verdict": secondary_verdict,
+                    "verdict": secondary_parsed.get("verdict"),
+                    "confidence": secondary_parsed.get("confidence"),
+                    "impact_level": secondary_parsed.get("impact_level", impact_level),
+                    "reasoning": secondary_parsed.get("reasoning", ""),
+                },
+            }
+
+            # 3. Case update + action pipeline (deterministic enforced logic)
+            if secondary_verdict:
+                get_supabase().table("cases").update(
+                    {"secondary_verdict": secondary_verdict}
+                ).eq("id", case["id"]).execute()
+
+            action_outcome = decide_and_execute_action(
+                alert=alert,
+                case=case,
+                primary_parsed=primary_parsed,
+                secondary_parsed=secondary_parsed,
+                enrichment=sec_enrichment,
+                primary_provider=primary_provider,
+                secondary_provider=secondary_provider,
+            )
+
+            decision = action_outcome["decision"]
+            yield {
+                "event": "action_decided",
+                "data": {
+                    "action_id": decision["action_id"],
+                    "action_class": decision["action_class"],
+                    "action_status": decision["action_status"],
+                    "target": decision.get("target"),
+                    "rationale": decision.get("rationale"),
+                    "executed": decision["execute"],
+                    "record": action_outcome["record"],
+                },
+            }
+
+            yield {
+                "event": "investigation_complete",
+                "data": {
+                    "alert_id": alert_id,
+                    "source_alert_id": alert.get("source_alert_id"),
+                    "case_id": case["id"],
+                    "primary_verdict": primary_parsed.get("verdict"),
+                    "primary_confidence": primary_parsed.get("confidence"),
+                    "primary_reasoning": primary_parsed.get("reasoning", ""),
+                    "secondary_verdict": secondary_verdict,
+                    "secondary_confidence": secondary_parsed.get("confidence"),
+                    "secondary_reasoning": secondary_parsed.get("reasoning", ""),
+                    "impact_level": impact_level or secondary_parsed.get("impact_level"),
+                    "action_id": decision["action_id"],
+                    "action_status": decision["action_status"],
+                    "case_closed": action_outcome["case_closed"],
+                    "alert_status": action_outcome["alert_status"],
+                    "memory_record_id": action_outcome.get("memory_record_id"),
+                    "primary_provider": primary_provider,
+                    "secondary_provider": secondary_provider,
+                },
+            }
+
+            logger.info(
+                "Streamed investigation for %s complete (pregenerated): case %s, %s(%s)/%s(%s), "
+                "action %s (%s)",
+                alert.get("source_alert_id"),
+                case["id"],
+                primary_parsed.get("verdict"),
+                primary_provider,
+                secondary_verdict,
+                secondary_provider,
+                decision["action_id"],
+                decision["action_status"],
+            )
+            return
+
+    # ── Live LLM Client Fallback ───────────────────────────────────────
     primary_client = get_groq_client()
     secondary_client = get_cerebras_client()
     primary_provider = primary_client.provider_name      # "groq"
     secondary_provider = secondary_client.provider_name  # "cerebras"
-
-    alert_id = alert["id"]
-    alert_type = alert.get("alert_type", "unknown")
-    payload = alert.get("raw_payload", {})
 
     yield {
         "event": "investigation_started",
@@ -301,8 +524,11 @@ def run_dual_agent_stream(alert: dict[str, Any]) -> Iterator[dict[str, Any]]:
             "case_id": case["id"],
             "primary_verdict": primary_parsed.get("verdict"),
             "primary_confidence": primary_parsed.get("confidence"),
+            "primary_reasoning": primary_parsed.get("reasoning", ""),
             "secondary_verdict": secondary_verdict,
             "secondary_confidence": secondary_parsed.get("confidence"),
+            "secondary_reasoning": secondary_parsed.get("reasoning", ""),
+            "impact_level": impact_level or secondary_parsed.get("impact_level"),
             "action_id": decision["action_id"],
             "action_status": decision["action_status"],
             "case_closed": action_outcome["case_closed"],

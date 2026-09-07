@@ -21,6 +21,19 @@ from app.models.enums import (
 )
 
 
+# ── organizations ────────────────────────────────────────────────────────────
+
+
+class OrganizationResponse(BaseModel):
+    id: UUID
+    name: str
+    sector: str
+    code: str
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
 # ── alerts ────────────────────────────────────────────────────────────────────
 
 
@@ -29,6 +42,7 @@ class AlertBase(BaseModel):
     alert_type: str
     raw_payload: dict[str, Any]
     status: AlertStatus = AlertStatus.pending
+    org_id: Optional[UUID] = None
 
 
 class AlertCreate(AlertBase):
@@ -62,6 +76,7 @@ class CaseBase(BaseModel):
     # migration (or before the secondary ran) still validate.
     primary_provider: Optional[str] = None
     secondary_provider: Optional[str] = None
+    org_id: Optional[UUID] = None
 
 
 class CaseCreate(CaseBase):
@@ -84,6 +99,7 @@ class AnalystOverrideBase(BaseModel):
     analyst_decision: AnalystDecision
     analyst_action: Optional[str] = None
     analyst_reasoning: Optional[str] = None
+    org_id: Optional[UUID] = None
 
 
 class AnalystOverrideCreate(AnalystOverrideBase):
@@ -104,6 +120,7 @@ class FirewallFlagBase(BaseModel):
     alert_id: UUID
     flag_reason: str
     raw_snippet: Optional[str] = None
+    org_id: Optional[UUID] = None
 
 
 class FirewallFlagCreate(FirewallFlagBase):

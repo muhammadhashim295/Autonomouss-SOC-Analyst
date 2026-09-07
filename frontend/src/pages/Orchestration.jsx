@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useReducer } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import FlowChart from '../components/FlowChart'
 import AgentPanel from '../components/AgentPanel'
 import AlertCard from '../components/AlertCard'
@@ -14,6 +14,8 @@ import ComplianceReportModal from '../components/ComplianceReportModal'
 
 
 
+import OrgSwitcher from '../components/OrgSwitcher'
+import { useAuth, PRESET_ACCOUNTS } from '../context/AuthContext'
 import { useSSE } from '../hooks/useSSE'
 
 import {
@@ -38,8 +40,8 @@ const INIT_STREAM = () => ({
 })
 
 const LIVE_FEED_DURATION_SECONDS = 300
-const LIVE_FEED_INTERVAL_SECONDS = 3
-const LIVE_FEED_POISON_RATIO = 0
+const LIVE_FEED_INTERVAL_SECONDS = 2
+const LIVE_FEED_POISON_RATIO = 0.15
 const ALERT_POLL_INTERVAL_MS = 1000
 
 /** Find current active stage for stream visualization */
@@ -163,28 +165,68 @@ function AlertStream({ alertId, onEvent }) {
   return null
 }
 
-function isLiveQueueAlert(alert, sessionStartedAt) {
-  if (!['pending', 'in_review'].includes(alert.status)) return false
-  if (!alert.source_alert_id?.startsWith('LIVE-')) return false
-
-  const receivedAt = Date.parse(alert.received_at || '')
-  return Number.isFinite(receivedAt) && receivedAt >= sessionStartedAt
+function isLiveQueueAlert(alert) {
+  return ['pending', 'in_review'].includes(alert.status)
 }
 
-// Closed/resolved alerts from this launch — same session scoping as the live
-// queue, but for the CLOSED tab (kept separate so auto-investigation still only
-// ever picks up pending/in_review alerts).
-function isClosedQueueAlert(alert, sessionStartedAt) {
-  if (alert.status !== 'closed') return false
-  if (!alert.source_alert_id?.startsWith('LIVE-')) return false
-
-  const receivedAt = Date.parse(alert.received_at || '')
-  return Number.isFinite(receivedAt) && receivedAt >= sessionStartedAt
+function isClosedQueueAlert(alert) {
+  return alert.status === 'closed'
 }
 
 export default function Orchestration() {
   const { client } = useParams()
-  const displayName = client ? client.charAt(0).toUpperCase() + client.slice(1).replace(/-/g, ' ') : 'Command Center'
+  const navigate = useNavigate()
+  const { currentUser, selectedOrgId, organizations } = useAuth()
+
+  // Strict Client Route Guard: Redirect client user to their assigned tenant route if they attempt cross-tenant navigation
+  useEffect(() => {
+    const isClientUser = currentUser?.role === 'client' || currentUser?.is_client
+    if (isClientUser && currentUser?.org_code && client) {
+      const myCode = currentUser.org_code.toLowerCase()
+      const urlCode = client.toLowerCase()
+      const matches = urlCode.includes(myCode) || (myCode === 'indus' && urlCode.includes('indus'))
+      if (!matches) {
+        navigate(`/orchestration/${myCode}`, { replace: true })
+      }
+    }
+  }, [currentUser, client, navigate])
+
+  // Resolve target organization id
+  let targetOrgId = null
+  if (currentUser?.is_client && currentUser.org_id) {
+    targetOrgId = currentUser.org_id
+  } else if (selectedOrgId && selectedOrgId !== 'ALL') {
+    targetOrgId = selectedOrgId
+  } else if (client) {
+    const match = organizations.find(
+      (o) => o.code?.toLowerCase() === client.toLowerCase() || o.name?.toLowerCase().includes(client.toLowerCase())
+    ) || PRESET_ACCOUNTS.find(
+      (a) => a.key === client.toLowerCase() || a.orgCode?.toLowerCase() === client.toLowerCase()
+    )
+    if (match?.id) targetOrgId = match.id
+  }
+
+  // Display Name & Sector Badge
+  let orgTitle = 'Command Center'
+  let sectorBadge = null
+
+  if (currentUser?.is_client) {
+    orgTitle = currentUser.org_name || (currentUser.org_code ? `${currentUser.org_code} Digital Network` : 'Client Organization')
+    sectorBadge = currentUser.sector || 'SECURED TENANT'
+  } else if (currentUser?.is_admin) {
+    if (selectedOrgId && selectedOrgId !== 'ALL') {
+      const currentOrgObj = organizations.find((o) => o.id === selectedOrgId || o.code === selectedOrgId)
+      orgTitle = currentOrgObj ? currentOrgObj.name : 'Selected Organization'
+      sectorBadge = currentOrgObj?.sector || 'FILTERED TENANT'
+    } else {
+      orgTitle = 'Global SOC Command (All Organizations)'
+      sectorBadge = 'CROSS-TENANT SUPERUSER'
+    }
+  } else if (client) {
+    const preset = PRESET_ACCOUNTS.find((a) => a.key === client.toLowerCase() || a.orgCode?.toLowerCase() === client.toLowerCase())
+    orgTitle = preset ? preset.name : (client.charAt(0).toUpperCase() + client.slice(1).replace(/-/g, ' '))
+    sectorBadge = preset?.sector || 'MONITORED TENANT'
+  }
 
   // Alert State & Filters
   const [alerts, setAlerts] = useState([])
@@ -198,7 +240,6 @@ export default function Orchestration() {
   const [announcement, setAnnouncement] = useState('')
   // Queue is scoped to this Command Center launch, never historic records.
   const [liveSessionStartedAt, setLiveSessionStartedAt] = useState(() => Date.now())
-
 
   // Multi-stream state & Active streams
   const [streamMap, dispatch] = useReducer(streamReducer, {})
@@ -229,24 +270,26 @@ export default function Orchestration() {
           LIVE_FEED_DURATION_SECONDS,
           LIVE_FEED_INTERVAL_SECONDS,
           LIVE_FEED_POISON_RATIO,
+          targetOrgId,
         )
         const startedAt = Date.parse(run.started_at || '')
         setLiveSessionStartedAt(Number.isFinite(startedAt) ? startedAt : Date.now())
       } catch (err) {
         // A concurrent run is benign (re-visit or StrictMode double-mount)
-        if (!String(err.message || '').includes('already active')) {
+        const msg = String(err.message || '').toLowerCase()
+        if (!msg.includes('already active') && !msg.includes('409')) {
           setGlobalError(err.message)
         }
       }
     }
     boot()
-  }, [])
+  }, [targetOrgId])
 
   // Poll every second so a newly generated Cloudflare alert appears immediately.
   useEffect(() => {
     const refresh = async () => {
       try {
-        const res = await getAlerts(25)
+        const res = await getAlerts(50, null, targetOrgId)
         if (Array.isArray(res)) setAlerts(res)
       } catch (err) {
         setGlobalError(err.message)
@@ -255,7 +298,7 @@ export default function Orchestration() {
     refresh()
     const t = setInterval(refresh, ALERT_POLL_INTERVAL_MS)
     return () => clearInterval(t)
-  }, [])
+  }, [targetOrgId])
 
 
   // Poll live feed status (2s)
@@ -265,10 +308,18 @@ export default function Orchestration() {
         const s = await getLiveFeedStatus()
         setFeedStatus(s.status)
         setFeedStats(s.status === 'running' ? s : null)
-        if (s.last_error) setGlobalError(s.last_error)
+        if (s.last_error) {
+          const errMsg = String(s.last_error).toLowerCase()
+          if (!errMsg.includes('already active') && !errMsg.includes('409')) {
+            setGlobalError(s.last_error)
+          }
+        }
       } catch (err) {
         setFeedStatus('idle')
-        setGlobalError(err.message)
+        const msg = String(err.message || '').toLowerCase()
+        if (!msg.includes('already active') && !msg.includes('409')) {
+          setGlobalError(err.message)
+        }
       }
     }
     refresh()
@@ -330,9 +381,8 @@ export default function Orchestration() {
       let added = false
       for (const a of alerts) {
         if (next.size >= MAX_CONCURRENT_STREAMS) break
-        // Only Cloudflare alerts generated during this launch can enter the pipeline.
         if (
-          isLiveQueueAlert(a, liveSessionStartedAt)
+          isLiveQueueAlert(a)
           && a.status === 'pending'
           && !next.has(a.id)
           && !streamMap[a.id]
@@ -343,7 +393,7 @@ export default function Orchestration() {
       }
       return added ? next : prev
     })
-  }, [alerts, streamMap, liveSessionStartedAt])
+  }, [alerts, streamMap])
 
   // Fetch Firewall Flags
   useEffect(() => {
@@ -361,8 +411,26 @@ export default function Orchestration() {
     }
   }, [streamMap])
 
-  const handleStopFeed = async () => {
-    try { await stopLiveFeed() } catch { /* silent */ }
+  const handleFeedToggle = async () => {
+    try {
+      if (feedStatus === 'running') {
+        await stopLiveFeed()
+        setFeedStatus('idle')
+        setFeedStats(null)
+      } else {
+        await startLiveFeed(
+          LIVE_FEED_DURATION_SECONDS,
+          LIVE_FEED_INTERVAL_SECONDS,
+          LIVE_FEED_POISON_RATIO,
+        )
+        setFeedStatus('running')
+      }
+    } catch (err) {
+      const msg = String(err.message || '').toLowerCase()
+      if (!msg.includes('already active') && !msg.includes('409')) {
+        setGlobalError(err.message)
+      }
+    }
   }
 
   const handleModeToggle = async () => {
@@ -423,10 +491,9 @@ export default function Orchestration() {
     setShowEscalationModal(false)
   }
 
-  // The command queue never replays historic data or solved alerts.
   const safeAlerts = Array.isArray(alerts) ? alerts : []
-  const liveQueueAlerts = safeAlerts.filter(alert => isLiveQueueAlert(alert, liveSessionStartedAt))
-  const closedQueueAlerts = safeAlerts.filter(alert => isClosedQueueAlert(alert, liveSessionStartedAt))
+  const liveQueueAlerts = safeAlerts.filter(alert => isLiveQueueAlert(alert))
+  const closedQueueAlerts = safeAlerts.filter(alert => isClosedQueueAlert(alert))
 
   // Filter this launch's queue by search and state. CLOSED draws from resolved
   // alerts; the other tabs draw from the live (pending/in_review) queue.
@@ -495,10 +562,16 @@ export default function Orchestration() {
             <span>←</span> Back to Gateway
           </Link>
           <span className="text-slate-800">│</span>
-          <h1 className="text-base font-display font-bold text-white flex items-center gap-2">
-            <span className="text-emerald-400 text-glow-green">{displayName}</span>
-            <span className="text-slate-500 font-mono text-xs font-normal">Command Center</span>
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-base font-display font-bold text-white flex items-center gap-2">
+              <span className="text-emerald-400 text-glow-green">{orgTitle}</span>
+            </h1>
+            {sectorBadge && (
+              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 uppercase">
+                {sectorBadge}
+              </span>
+            )}
+          </div>
           {streamingIds.size > 0 && (
             <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 glow-cyan animate-pulse">
               {streamingIds.size} ACTIVE PIPELINE{streamingIds.size > 1 ? 'S' : ''}
@@ -507,6 +580,8 @@ export default function Orchestration() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          <OrgSwitcher />
+
           {/* View Switcher Tabs */}
           <div className="flex items-center gap-1 p-1 bg-slate-900/80 border border-slate-800 rounded-xl flex-wrap">
             <button
@@ -539,16 +614,6 @@ export default function Orchestration() {
             >
               🧠 RAG MEMORY VAULT
             </button>
-            <button
-              onClick={() => setActiveView('hud')}
-              className={`px-3 py-1.5 rounded-lg font-mono text-xs font-semibold transition-all cursor-pointer ${
-                activeView === 'hud'
-                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 glow-green'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              📈 EXECUTIVE HUD
-            </button>
           </div>
 
 
@@ -566,21 +631,23 @@ export default function Orchestration() {
           </button>
 
           <button
-            onClick={handleStopFeed}
-            className={`px-3 py-1.5 rounded-lg font-mono text-xs font-semibold border transition-all duration-300 flex items-center gap-1.5 ${
+            onClick={handleFeedToggle}
+            className={`px-3 py-1.5 rounded-lg font-mono text-xs font-semibold border transition-all duration-300 flex items-center gap-1.5 cursor-pointer ${
               feedStatus === 'running'
-                ? 'border-red-500/40 text-red-400 bg-red-500/15 hover:bg-red-500/25 glow-red cursor-pointer'
-                : 'border-slate-800 text-slate-500 bg-slate-900/40'
+                ? 'border-red-500/40 text-red-400 bg-red-500/15 hover:bg-red-500/25 glow-red'
+                : 'border-emerald-500/40 text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 glow-green'
             }`}
           >
-
             {feedStatus === 'running' ? (
               <>
                 <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
                 <span>■ STOP LIVE FEED</span>
               </>
             ) : (
-              <span>■ FEED STOPPED</span>
+              <>
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                <span>▶ START LIVE FEED</span>
+              </>
             )}
           </button>
         </div>
@@ -668,8 +735,6 @@ export default function Orchestration() {
             <TopologyMap activeAlert={focusedAlert} streamState={focusedStream} alerts={liveQueueAlerts} />
           ) : activeView === 'memory' ? (
             <MemoryVault activeAlert={focusedAlert} streamState={focusedStream} />
-          ) : activeView === 'hud' ? (
-            <ExecutiveHUD alerts={alerts} />
           ) : focusedStream && focusedAlert ? (
 
 

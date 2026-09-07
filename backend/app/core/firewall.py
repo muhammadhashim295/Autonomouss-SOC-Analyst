@@ -127,12 +127,14 @@ def check_alert(source_alert_id: str, alert_type: str, raw_payload: dict[str, An
 
 
 def _extract_strings(obj: Any) -> list[str]:
-    """Recursively extract all string values from a nested dict / list."""
+    """Recursively extract all string keys and values from a nested dict / list."""
     strings: list[str] = []
     if isinstance(obj, str):
         strings.append(obj)
     elif isinstance(obj, dict):
-        for v in obj.values():
+        for k, v in obj.items():
+            if isinstance(k, str):
+                strings.append(k)
             strings.extend(_extract_strings(v))
     elif isinstance(obj, list):
         for item in obj:

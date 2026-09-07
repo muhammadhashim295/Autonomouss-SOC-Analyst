@@ -1,7 +1,8 @@
-"""Live feed generation endpoints — start, status, stop."""
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.core.auth import CurrentUser, get_optional_user
 from app.services.alert_generator import (
     get_generator_status,
     start_generation,
@@ -17,6 +18,8 @@ async def generate_start(
     duration_seconds: int = 120,
     interval_seconds: int = 3,
     poison_ratio: float = 0.15,
+    org_id: Optional[str] = Query(None, description="Optional organization UUID to target"),
+    current_user: Optional[CurrentUser] = Depends(get_optional_user),
 ) -> dict:
     """Start a Cloudflare Workers AI-backed alert generation run.
 
@@ -45,11 +48,19 @@ async def generate_start(
             detail="duration_seconds must be between 10 and 3600",
         )
 
+    target_org = current_user.org_id if (current_user and current_user.is_client) else org_id
     try:
-        return start_generation(duration_seconds, interval_seconds, poison_ratio)
+        return start_generation(
+            duration_seconds=duration_seconds,
+            interval_seconds=interval_seconds,
+            poison_ratio=poison_ratio,
+            org_id=target_org,
+        )
     except CloudflareGenerationError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except RuntimeError as exc:
+        if "already active" in str(exc).lower():
+            return get_generator_status()
         raise HTTPException(status_code=409, detail=str(exc))
 
 
