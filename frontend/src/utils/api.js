@@ -7,11 +7,11 @@
 export function getBaseUrl() {
   if (typeof window !== 'undefined') {
     const saved = localStorage.getItem('soc_backend_url')
-    if (saved && saved.trim()) {
+    if (saved && saved.trim() && !saved.includes('your-backend')) {
       return saved.trim().replace(/\/$/, '')
     }
   }
-  if (import.meta.env.VITE_API_URL && import.meta.env.VITE_API_URL.trim()) {
+  if (import.meta.env.VITE_API_URL && import.meta.env.VITE_API_URL.trim() && !import.meta.env.VITE_API_URL.includes('your-backend')) {
     return import.meta.env.VITE_API_URL.trim().replace(/\/$/, '')
   }
   // Production fallback: If running on Vercel or any cloud domain, automatically default to the live Render backend

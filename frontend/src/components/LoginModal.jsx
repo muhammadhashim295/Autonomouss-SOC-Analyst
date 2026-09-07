@@ -21,8 +21,15 @@ export default function LoginModal() {
 
   useEffect(() => {
     const current = getBaseUrl()
-    setBackendUrl(current)
-    setInputUrl(current)
+    if (!current || current.includes('your-backend')) {
+      const live = 'https://autonomouss-soc-analyst.onrender.com'
+      setCustomBackendUrl(live)
+      setBackendUrl(live)
+      setInputUrl(live)
+    } else {
+      setBackendUrl(current)
+      setInputUrl(current)
+    }
   }, [isLoginModalOpen])
 
   if (!isLoginModalOpen) return null
@@ -56,11 +63,21 @@ export default function LoginModal() {
     }
   }
 
-  const handleSaveBackendUrl = async () => {
+  const handleSaveBackendUrl = async (overrideUrl = null) => {
     setTestingHealth(true)
     setHealthFeedback(null)
     try {
-      const clean = inputUrl.trim().replace(/\/$/, '')
+      const raw = (typeof overrideUrl === 'string' ? overrideUrl : inputUrl).trim()
+      let clean = raw.replace(/\/$/, '')
+      if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
+        clean = `https://${clean}`
+      }
+      if (clean.endsWith('.onrender.')) {
+        clean += 'com'
+      } else if (clean.endsWith('.onrender')) {
+        clean += '.com'
+      }
+      setInputUrl(clean)
       const health = await testBackendHealth(clean)
       setCustomBackendUrl(clean)
       setBackendUrl(clean)
@@ -71,7 +88,7 @@ export default function LoginModal() {
       setTimeout(() => {
         setIsConfigOpen(false)
         setHealthFeedback(null)
-      }, 2000)
+      }, 1500)
     } catch (err) {
       setHealthFeedback({
         type: 'error',
@@ -83,11 +100,11 @@ export default function LoginModal() {
   }
 
   const handleResetBackendUrl = () => {
-    setCustomBackendUrl(null)
-    const def = getBaseUrl()
-    setInputUrl(def)
-    setBackendUrl(def)
-    setHealthFeedback({ type: 'info', text: 'Reset to default environment URL.' })
+    const live = 'https://autonomouss-soc-analyst.onrender.com'
+    setCustomBackendUrl(live)
+    setInputUrl(live)
+    setBackendUrl(live)
+    setHealthFeedback({ type: 'info', text: 'Reset to live Render backend.' })
     setTimeout(() => setHealthFeedback(null), 2000)
   }
 
@@ -166,6 +183,16 @@ export default function LoginModal() {
                   title="Reset to default"
                 >
                   ↺
+                </button>
+              </div>
+              <div className="flex items-center gap-2 pt-0.5">
+                <span className="text-[10px] font-mono text-slate-500">Quick set:</span>
+                <button
+                  type="button"
+                  onClick={() => handleSaveBackendUrl('https://autonomouss-soc-analyst.onrender.com')}
+                  className="text-[10px] font-mono text-emerald-400 hover:text-emerald-300 underline cursor-pointer"
+                >
+                  ⚡ Use Verified Backend (autonomouss-soc-analyst.onrender.com)
                 </button>
               </div>
               {healthFeedback && (
