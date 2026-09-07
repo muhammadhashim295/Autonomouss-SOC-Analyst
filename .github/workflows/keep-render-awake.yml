@@ -1,0 +1,13 @@
+name: Keep Render Service Awake
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping-health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call health endpoint
+        run: curl -fsS https://autonomouss-soc-analyst.onrender.com/health
