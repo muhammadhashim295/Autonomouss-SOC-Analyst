@@ -1,4 +1,42 @@
-const BASE = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : ''
+// ── Dynamic Backend Target Resolution ──
+// Priority:
+// 1. Manually saved in localStorage ('soc_backend_url') — allows 1-click in-browser configuration
+// 2. Build-time environment variable ('VITE_API_URL') — baked by Vercel/Vite
+// 3. Fallback to empty string '' (which uses Vite local proxy)
+
+export function getBaseUrl() {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('soc_backend_url')
+    if (saved && saved.trim()) {
+      return saved.trim().replace(/\/$/, '')
+    }
+  }
+  return import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : ''
+}
+
+export function setCustomBackendUrl(url) {
+  if (typeof window !== 'undefined') {
+    if (url && url.trim()) {
+      localStorage.setItem('soc_backend_url', url.trim().replace(/\/$/, ''))
+    } else {
+      localStorage.removeItem('soc_backend_url')
+    }
+  }
+}
+
+export function endpoint(path) {
+  const base = getBaseUrl()
+  const cleanPath = path.startsWith('/') ? path : `/${path}`
+  return `${base}${cleanPath}`
+}
+
+export async function testBackendHealth(targetUrl = null) {
+  const base = (targetUrl !== null ? targetUrl : getBaseUrl()).replace(/\/$/, '')
+  const url = `${base}/health`
+  const res = await fetch(url, { method: 'GET' })
+  if (!res.ok) throw new Error(`Health check returned HTTP ${res.status}`)
+  return res.json()
+}
 
 // ── Auth & Token Storage ──
 
@@ -39,21 +77,29 @@ function authHeaders(headers = {}) {
 // ── Auth API ──
 
 export async function login(email, password) {
-  const url = `${BASE}/auth/login`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  })
+  const url = endpoint('/auth/login')
+  const base = getBaseUrl()
+
+  let res
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    })
+  } catch (netErr) {
+    throw new Error(`Cannot reach backend at ${url}. Check your backend URL or internet connection. (${netErr.message})`)
+  }
+
   if (!res.ok) {
     if (res.status === 405) {
-      if (!BASE) {
+      if (!base) {
         throw new Error(
-          'Login failed (405): VITE_API_URL is not set or not baked into this Vercel build. Add VITE_API_URL in Vercel > Settings > Environment Variables, then trigger a Redeploy under the Deployments tab.'
+          'Login failed (405): VITE_API_URL is not set or not baked into this Vercel build. Click "Configure Backend URL" below to enter your backend URL directly.'
         )
       }
       throw new Error(
-        `Login failed (405 Method Not Allowed at ${url}). Ensure your backend URL uses https:// and matches your backend route.`
+        `Login failed (405 Method Not Allowed at ${url}). Check that the backend URL is https:// and does not redirect.`
       )
     }
     const err = await res.json().catch(() => ({}))
@@ -63,7 +109,7 @@ export async function login(email, password) {
 }
 
 export async function getMe() {
-  const res = await fetch(`${BASE}/auth/me`, {
+  const res = await fetch(endpoint('/auth/me'), {
     headers: authHeaders(),
   })
   if (!res.ok) throw new Error(`Failed to get profile: ${res.status}`)
@@ -71,7 +117,7 @@ export async function getMe() {
 }
 
 export async function getOrganizations() {
-  const res = await fetch(`${BASE}/organizations`)
+  const res = await fetch(endpoint('/organizations'))
   if (!res.ok) throw new Error(`Failed to get organizations: ${res.status}`)
   return res.json()
 }
@@ -88,7 +134,7 @@ export async function startLiveFeed(duration = 120, interval = 5, poisonRatio = 
   if (orgId && orgId !== 'ALL') {
     params.set('org_id', orgId)
   }
-  const res = await fetch(`${BASE}/alerts/generate/start?${params}`, {
+  const res = await fetch(endpoint(`/alerts/generate/start?${params}`), {
     method: 'POST',
     headers: authHeaders(),
   })
@@ -100,7 +146,7 @@ export async function startLiveFeed(duration = 120, interval = 5, poisonRatio = 
 }
 
 export async function getLiveFeedStatus() {
-  const res = await fetch(`${BASE}/alerts/generate/status`, {
+  const res = await fetch(endpoint('/alerts/generate/status'), {
     headers: authHeaders(),
   })
   if (!res.ok) throw new Error(`Failed to get status: ${res.status}`)
@@ -108,7 +154,7 @@ export async function getLiveFeedStatus() {
 }
 
 export async function stopLiveFeed() {
-  const res = await fetch(`${BASE}/alerts/generate/stop`, {
+  const res = await fetch(endpoint('/alerts/generate/stop'), {
     method: 'POST',
     headers: authHeaders(),
   })
@@ -122,7 +168,7 @@ export async function getAlerts(limit = 50, status = null, orgId = null) {
   const params = new URLSearchParams({ limit: String(limit) })
   if (status) params.set('status', status)
   if (orgId && orgId !== 'ALL') params.set('org_id', orgId)
-  const res = await fetch(`${BASE}/alerts/?${params}`, {
+  const res = await fetch(endpoint(`/alerts/?${params}`), {
     headers: authHeaders(),
   })
   if (!res.ok) throw new Error(`Failed to get alerts: ${res.status}`)
@@ -130,7 +176,7 @@ export async function getAlerts(limit = 50, status = null, orgId = null) {
 }
 
 export async function ingestAlert(alertData) {
-  const res = await fetch(`${BASE}/alerts/`, {
+  const res = await fetch(endpoint('/alerts/'), {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(alertData),
@@ -149,7 +195,7 @@ export async function getFirewallFlags(alertId = null, orgId = null) {
   if (alertId) params.set('alert_id', alertId)
   if (orgId && orgId !== 'ALL') params.set('org_id', orgId)
   const q = params.toString() ? `?${params.toString()}` : ''
-  const res = await fetch(`${BASE}/alerts/firewall-flags${q}`, {
+  const res = await fetch(endpoint(`/alerts/firewall-flags${q}`), {
     headers: authHeaders(),
   })
   if (!res.ok) throw new Error(`Failed to get firewall flags: ${res.status}`)
@@ -159,7 +205,7 @@ export async function getFirewallFlags(alertId = null, orgId = null) {
 // ── Settings / Mode ──
 
 export async function getMode() {
-  const res = await fetch(`${BASE}/settings/mode`, {
+  const res = await fetch(endpoint('/settings/mode'), {
     headers: authHeaders(),
   })
   if (!res.ok) throw new Error(`Failed to get mode: ${res.status}`)
@@ -167,7 +213,7 @@ export async function getMode() {
 }
 
 export async function setMode(mode) {
-  const res = await fetch(`${BASE}/settings/mode`, {
+  const res = await fetch(endpoint('/settings/mode'), {
     method: 'PUT',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ mode }),
@@ -182,7 +228,7 @@ export async function getCases(limit = 100, status = null, orgId = null) {
   const params = new URLSearchParams({ limit: String(limit) })
   if (status) params.set('status', status)
   if (orgId && orgId !== 'ALL') params.set('org_id', orgId)
-  const res = await fetch(`${BASE}/cases/?${params}`, {
+  const res = await fetch(endpoint(`/cases/?${params}`), {
     headers: authHeaders(),
   })
   if (!res.ok) throw new Error(`Failed to get cases: ${res.status}`)
@@ -190,7 +236,7 @@ export async function getCases(limit = 100, status = null, orgId = null) {
 }
 
 export async function getCase(caseId) {
-  const res = await fetch(`${BASE}/cases/${caseId}`, {
+  const res = await fetch(endpoint(`/cases/${caseId}`), {
     headers: authHeaders(),
   })
   if (!res.ok) throw new Error(`Failed to get case: ${res.status}`)
@@ -203,7 +249,7 @@ export async function getMemoryRecords({ record_type = null, alert_type = null, 
   const params = new URLSearchParams({ limit: String(limit) })
   if (record_type) params.set('record_type', record_type)
   if (alert_type) params.set('alert_type', alert_type)
-  const res = await fetch(`${BASE}/memory/records?${params}`, {
+  const res = await fetch(endpoint(`/memory/records?${params}`), {
     headers: authHeaders(),
   })
   if (!res.ok) throw new Error(`Failed to get memory records: ${res.status}`)
@@ -211,7 +257,7 @@ export async function getMemoryRecords({ record_type = null, alert_type = null, 
 }
 
 export async function submitAnalystDecision(caseId, { decision, analyst_action, analyst_reasoning }) {
-  const res = await fetch(`${BASE}/cases/${caseId}/decision`, {
+  const res = await fetch(endpoint(`/cases/${caseId}/decision`), {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({

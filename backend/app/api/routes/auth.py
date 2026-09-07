@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr
 
 from app.core.auth import CurrentUser, get_current_user
@@ -24,6 +24,26 @@ class LoginResponse(BaseModel):
     user: dict[str, Any]
     profile: dict[str, Any]
     organization: Optional[dict[str, Any]] = None
+
+
+@router.options("/auth/login")
+@router.options("/auth/login/", include_in_schema=False)
+async def login_options() -> Response:
+    """Explicitly respond 200 OK to CORS preflights or proxy probes."""
+    return Response(status_code=200)
+
+
+@router.get("/auth/login")
+@router.get("/auth/login/", include_in_schema=False)
+async def login_get(email: Optional[str] = None, password: Optional[str] = None) -> Any:
+    """Allow query parameter authentication as fallback if proxy converted POST to GET."""
+    if email and password:
+        return await login(LoginRequest(email=email, password=password))
+    return {
+        "status": "ready",
+        "endpoint": "/auth/login",
+        "message": "Use POST with JSON body {'email', 'password'} to authenticate.",
+    }
 
 
 @router.post("/auth/login", response_model=LoginResponse)

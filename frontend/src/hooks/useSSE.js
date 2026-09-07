@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react'
+import { getBaseUrl } from '../utils/api'
 
 /**
  * Consume SSE from POST /alerts/{id}/investigate/stream.
@@ -29,7 +30,7 @@ export function useSSE(alertId, onEvent) {
           headers['Authorization'] = `Bearer ${token}`
         }
 
-        const baseUrl = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : ''
+        const baseUrl = getBaseUrl()
         const res = await fetch(`${baseUrl}/alerts/${alertId}/investigate/stream`, {
           method: 'POST',
           headers,
