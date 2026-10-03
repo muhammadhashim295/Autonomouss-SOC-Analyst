@@ -12,6 +12,7 @@ export default function AgentPanel({ name, status, reasoning, verdict, confidenc
   const [copied, setCopied] = useState(false)
   const isActive = status === 'thinking' || status === 'running'
   const isDone = status === 'complete'
+  const isErrored = status === 'error'
 
   return (
     <div className={`glass-panel rounded-2xl overflow-hidden transition-all duration-500 border ${
@@ -19,6 +20,8 @@ export default function AgentPanel({ name, status, reasoning, verdict, confidenc
         ? 'border-emerald-500/40 glow-green'
         : isActive
         ? 'border-amber-500/40 glow-amber'
+        : isErrored
+        ? 'border-red-500/50 glow-red'
         : 'border-slate-800/80'
     }`}>
       {/* Panel Header */}
@@ -27,6 +30,7 @@ export default function AgentPanel({ name, status, reasoning, verdict, confidenc
           <div className={`w-2.5 h-2.5 rounded-full ${
             isDone ? 'bg-emerald-400' :
             isActive ? 'bg-amber-400 animate-pulse' :
+            isErrored ? 'bg-red-500' :
             'bg-slate-600'
           }`} />
           <span className="font-display font-bold text-sm text-white">{name}</span>
@@ -51,6 +55,14 @@ export default function AgentPanel({ name, status, reasoning, verdict, confidenc
           <div className="flex-1 flex flex-col items-center justify-center py-10 text-center">
             <span className="text-slate-600 font-mono text-xs mb-1">Agent Standby</span>
             <span className="text-slate-500 text-xs font-mono">Awaiting investigation dispatch...</span>
+          </div>
+        )}
+
+        {/* Halted State — the pipeline stalled before this agent produced output */}
+        {isErrored && !reasoning && (
+          <div className="flex-1 flex flex-col items-center justify-center py-10 text-center">
+            <span className="text-red-400 font-mono text-xs mb-1 animate-pulse">Agent Halted</span>
+            <span className="text-red-300/70 text-xs font-mono">Handoff did not complete — see investigation error above.</span>
           </div>
         )}
 

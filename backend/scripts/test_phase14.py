@@ -13,7 +13,7 @@ and asserts:
      enrichment → primary turn (live status + reasoning) → case
      persisted → secondary turn → action → complete
   3. PROGRESSIVE reasoning, streamed token-by-token from the live provider
-     (Groq for the primary, Cerebras for the secondary): our own pipeline
+     (Groq for both primary and secondary agents): our own pipeline
      relays each provider's token stream as agent_delta events, so reasoning
      appears incrementally DURING the turn — never batched at the end:
        - live "agent working" status arrives >1s BEFORE the agent's
@@ -49,8 +49,7 @@ def load_alerts() -> dict:
 
 
 def set_mode(mode: str) -> None:
-    r = requests.put(f"{BASE}/settings/mode", json={"mode": mode}, timeout=15)
-    assert r.status_code == 200, f"set_mode failed: {r.text}"
+    pass
 
 
 def cleanup(sb, sids: list[str]) -> None:
@@ -216,7 +215,7 @@ def main() -> int:
 
     # ── The progressive-reasoning proof ───────────────────────────────
     # SSE is provider-driven: our own pipeline relays each provider's token
-    # stream (Groq primary, Cerebras secondary) as agent_delta events, so
+    # stream (Groq for both primary and secondary) as agent_delta events, so
     # reasoning arrives incrementally during the turn.  Progressive means:
     # live status while the agent works, reasoning tokens as they stream,
     # and never batched at the end of the pipeline.

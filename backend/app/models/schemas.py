@@ -61,7 +61,7 @@ class AlertResponse(AlertBase):
 
 class CaseBase(BaseModel):
     alert_id: UUID
-    mode: CaseMode
+    mode: Optional[str] = None
     primary_verdict: Verdict
     primary_confidence: float = Field(ge=0.0, le=1.0)
     secondary_verdict: Optional[SecondaryVerdict] = None
@@ -70,12 +70,9 @@ class CaseBase(BaseModel):
     action_taken: Optional[str] = None
     action_status: ActionStatus = ActionStatus.none
     qoder_memory_record_id: Optional[str] = None
-    # Provider provenance (migration 005): which provider ran each agent.
-    # Primary is always Groq; Secondary is always Cerebras in the final
-    # three-provider architecture.  Optional so rows written before the
-    # migration (or before the secondary ran) still validate.
-    primary_provider: Optional[str] = None
-    secondary_provider: Optional[str] = None
+    # Provider provenance: Primary and Secondary agents both run on Groq.
+    primary_provider: Optional[str] = "groq"
+    secondary_provider: Optional[str] = "groq"
     org_id: Optional[UUID] = None
 
 

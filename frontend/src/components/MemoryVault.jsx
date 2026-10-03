@@ -123,11 +123,11 @@ export default function MemoryVault({ activeAlert, streamState }) {
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-purple-400 animate-pulse" />
             <h3 className="font-display font-bold text-base text-white tracking-wide">
-              RAG MEMORY VAULT & VECTOR INTELLIGENCE EXPLORER
+              CASE INTELLIGENCE VAULT & MEMORY EXPLORER
             </h3>
           </div>
           <p className="text-xs text-slate-400 font-mono mt-0.5">
-            Vector database storing historical incident embeddings and high-priority analyst corrections for RAG recall.
+            Secure repository storing historical incident patterns and high-priority analyst corrections for contextual recall.
           </p>
         </div>
 
@@ -150,7 +150,7 @@ export default function MemoryVault({ activeAlert, streamState }) {
 
       {/* RAG Stat Counters Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCounter label="Total Vectors" value={totalRecords} badge="pgvector" color="cyan" />
+        <StatCounter label="Total Case Records" value={totalRecords} badge="Active" color="cyan" />
         <StatCounter
           label="Analyst Overrides"
           value={correctionCount}
@@ -184,7 +184,7 @@ export default function MemoryVault({ activeAlert, streamState }) {
                   : 'text-slate-500 hover:text-slate-300 border border-slate-800 bg-slate-900/40'
               }`}
             >
-              {tab === 'ALL' ? 'ALL VECTORS' : tab === 'CORRECTION' ? '★ ANALYST CORRECTIONS' : 'INCIDENT CASES'}
+              {tab === 'ALL' ? 'ALL RECORDS' : tab === 'CORRECTION' ? '★ ANALYST CORRECTIONS' : 'INCIDENT CASES'}
             </button>
           ))}
         </div>
@@ -202,7 +202,7 @@ export default function MemoryVault({ activeAlert, streamState }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {loading && mappedRecords.length === 0 ? (
           <div className="col-span-full text-center py-12 text-slate-500 font-mono text-xs animate-pulse">
-            Loading memory vectors...
+            Loading intelligence records...
           </div>
         ) : mappedRecords.length === 0 ? (
           <div className="col-span-full text-center py-12 text-slate-500 font-mono text-xs">
@@ -277,7 +277,7 @@ export default function MemoryVault({ activeAlert, streamState }) {
           <div className="relative w-full max-w-xl overflow-hidden glass-panel border border-purple-500/40 rounded-2xl shadow-2xl glow-purple animate-slide-up p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
-                <span className="text-purple-400 font-mono text-sm font-bold">VECTOR INSPECTOR</span>
+                <span className="text-purple-400 font-mono text-sm font-bold">CASE RECORD INSPECTOR</span>
                 <span className="text-xs font-mono text-slate-400">[{activeRecordObj.id?.slice(0, 12)}]</span>
               </div>
               <button

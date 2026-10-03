@@ -58,13 +58,13 @@ export default function LoginModal() {
         <div className="mb-5">
           <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 mb-2">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            IAM & TENANT AUTHENTICATION
+            ENTERPRISE AUTHENTICATION
           </div>
           <h2 className="text-xl font-display font-bold text-white tracking-wide">
             Autonomous SOC Access Control
           </h2>
           <p className="text-xs text-slate-400 font-mono mt-1">
-            Authenticate to test strict Postgres Row Level Security (RLS) isolation between client organizations.
+            Sign in to access your organization&apos;s isolated security enclave.
           </p>
         </div>
 
@@ -177,7 +177,7 @@ export default function LoginModal() {
             disabled={submitting || !email || !password}
             className="w-full mt-2 py-2.5 rounded-xl font-mono text-xs font-bold text-emerald-300 bg-emerald-500/20 border border-emerald-500/40 hover:bg-emerald-500/30 transition disabled:opacity-50 cursor-pointer"
           >
-            {submitting ? 'AUTHENTICATING...' : 'SIGN IN WITH POSTGREST IAM'}
+            {submitting ? 'AUTHENTICATING...' : 'SIGN IN'}
           </button>
         </form>
 

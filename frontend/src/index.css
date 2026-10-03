@@ -19,6 +19,9 @@ body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  line-height: 1.55;
   overflow-x: hidden;
 }
 
@@ -184,6 +187,17 @@ body {
   animation: pulse-ring 2.5s ease-in-out infinite;
 }
 
+/* Traveling telemetry packet along a pipeline connector */
+@keyframes pipeflow {
+  0% { left: 0; opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { left: calc(100% - 6px); opacity: 0; }
+}
+.animate-pipeflow {
+  animation: pipeflow 1.1s linear infinite;
+}
+
 /* Background Cyber Grid */
 .cyber-grid-bg {
   background-image: 
@@ -202,4 +216,31 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   TYPOGRAPHY LEGIBILITY LAYER
+   These rules are intentionally declared AFTER @tailwind utilities so they
+   override the generated utilities by source order (equal specificity).
+   Goal: raise micro font sizes and low-contrast grays app-wide so text is
+   comfortable to read on the near-black (#04070d) background — one place,
+   fully reversible, no component edits.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* Micro absolute sizes (9/10/11px were too small to read comfortably) */
+.text-\[9px\]  { font-size: 12px;   line-height: 1.4; letter-spacing: 0.01em; }
+.text-\[10px\] { font-size: 12.5px; line-height: 1.45; letter-spacing: 0.01em; }
+.text-\[11px\] { font-size: 13.5px; line-height: 1.5; }
+
+/* The two most-abused Tailwind sizes — gently enlarged, layout-safe */
+.text-xs  { font-size: 0.82rem;  line-height: 1.35rem; }  /* 12px -> ~13px */
+.text-sm  { font-size: 0.95rem;  line-height: 1.55rem; }  /* 14px -> ~15px */
+
+/* Lift low-contrast muted grays to AA+ while keeping a soft hierarchy */
+.text-slate-400 { color: #a9b6ca; }  /* secondary body text  */
+.text-slate-500 { color: #93a1b6; }  /* tertiary labels/meta */
+.text-slate-600 { color: #7f8da2; }  /* de-emphasized (was near-illegible) */
+.text-slate-700 { color: #6b788d; }  /* decorative / separators / disabled */
+
+/* Mono blocks: tabular figures keep logs/IDs aligned and easier to scan */
+.font-mono { font-variant-numeric: tabular-nums; }
 

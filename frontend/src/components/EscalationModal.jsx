@@ -65,7 +65,7 @@ export default function EscalationModal({ caseData, alertData, onClose, onSubmit
                     ? 'bg-red-500/20 text-red-400 border border-red-500/40 glow-red'
                     : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                 }`}>
-                  {isHighImpact ? '⚠ HIGH IMPACT' : 'PAUSED IN APPROVAL MODE'}
+                  {isHighImpact ? '⚠ HIGH IMPACT' : '⚠ HUMAN REVIEW REQUIRED'}
                 </span>
               </h2>
               <p className="text-xs text-slate-400 font-mono">

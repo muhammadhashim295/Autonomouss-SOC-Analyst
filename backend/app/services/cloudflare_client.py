@@ -1,12 +1,11 @@
 """Cloudflare Workers AI client — live alert generator.
 
-Provider 3 of the final three-provider architecture:
+Two-provider architecture:
 
-- **Groq** → Primary Alert Triage Agent (``groq_client.py``)
-- **Cerebras** → Secondary Deep Investigation Agent (``cerebras_client.py``)
+- **Groq** → Primary Alert Triage Agent & Secondary Deep Investigation Agent (``groq_client.py``)
 - **Cloudflare Workers AI** → live alert generator (this module)
 
-Replaces the former Gemini generator.  Produces varied, realistic alert payloads
+Produces varied, realistic alert payloads
 matching the ``alerts`` table schema (``source_alert_id`` / ``alert_type`` /
 ``raw_payload``), with the same ~15% log-poisoning injection logic.  When
 Cloudflare is unavailable (no token/account) or a live run is not required, it
@@ -37,9 +36,39 @@ from typing import Any
 import requests
 
 from app.core.config import settings
-from app.services.provider_common import post_with_backoff
+from app.services.provider_common import is_hard_quota_response, post_with_backoff
 
 logger = logging.getLogger(__name__)
+
+# ── Daily-quota cooldown ──────────────────────────────────────────────────────────────
+# Cloudflare Workers AI's free tier caps at 10,000 neurons per day.  Once the API
+# reports that allocation spent, every call fails identically until the next
+# 00:00 UTC reset — retrying is pointless.  The first such response pauses live
+# attempts process-wide (shared by all generator workers) until the reset, so the
+# live feed can degrade to deterministic templates instead of erroring out.
+_quota_paused_until: datetime | None = None
+
+
+def _pause_quota_until_next_utc_midnight() -> None:
+    global _quota_paused_until
+    now = datetime.now(timezone.utc)
+    reset = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    _quota_paused_until = reset
+    logger.warning(
+        "Cloudflare daily free quota exhausted — live generation paused until %s "
+        "(UTC quota reset); template generation continues",
+        reset.isoformat(),
+    )
+
+
+def quota_paused() -> bool:
+    """Whether live Cloudflare calls are paused for the current quota window."""
+    return _quota_paused_until is not None and datetime.now(timezone.utc) < _quota_paused_until
+
+
+def quota_resets_at() -> datetime | None:
+    """When the quota cooldown expires (None when not paused)."""
+    return _quota_paused_until if quota_paused() else None
 
 _ALERT_TYPES = [
     "brute_force_login",
@@ -415,11 +444,114 @@ def _extract_first_json_object(text: str) -> str | None:
     return None
 
 
+def _try_repair_truncated_json(text: str) -> str | None:
+    """Attempt to repair JSON truncated by a max_tokens cutoff.
+
+    When Cloudflare Workers AI runs out of output tokens mid-generation, the
+    response is a syntactically incomplete JSON object (unbalanced braces,
+    unterminated strings).  This function uses a progressive truncation
+    strategy:
+
+    1. Find the start of the JSON object (first ``{``).
+    2. Walk backwards through the fragment, looking for comma positions
+       that sit between complete key-value pairs.
+    3. At each candidate cut point, close any open strings/arrays/objects
+       and try ``json.loads``.
+    4. Return the first successful parse that has ≥2 fields.
+
+    Returns ``None`` if the text is too short or has no salvageable content.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    fragment = text[start:]
+    if len(fragment) < 10:
+        return None
+
+    # Collect positions of commas that are outside string literals.
+    # These are the candidate cut points between key-value pairs.
+    comma_positions: list[int] = []
+    in_str = False
+    esc = False
+    for i, ch in enumerate(fragment):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == ',':
+                comma_positions.append(i)
+
+    # Try cutting at each comma position from the end, keeping the part
+    # before (and including) the comma's preceding value, then closing
+    # any open containers.
+    for cut_pos in reversed(comma_positions):
+        candidate = fragment[: cut_pos].rstrip()
+        # Remove any trailing comma left over
+        while candidate.endswith(","):
+            candidate = candidate[:-1].rstrip()
+
+        # Count open braces/brackets to know what closers to append
+        open_braces = 0
+        open_brackets = 0
+        s_in_str = False
+        s_esc = False
+        for c in candidate:
+            if s_in_str:
+                if s_esc:
+                    s_esc = False
+                elif c == "\\":
+                    s_esc = True
+                elif c == '"':
+                    s_in_str = False
+            else:
+                if c == '"':
+                    s_in_str = True
+                elif c == "{":
+                    open_braces += 1
+                elif c == "}":
+                    open_braces -= 1
+                elif c == "[":
+                    open_brackets += 1
+                elif c == "]":
+                    open_brackets -= 1
+
+        closing = "]" * max(0, open_brackets) + "}" * max(0, open_braces)
+        attempt = candidate + closing
+
+        try:
+            obj = json.loads(attempt)
+            if isinstance(obj, dict) and len(obj) >= 2:
+                logger.info(
+                    "Repaired truncated Cloudflare JSON (%d fields recovered)",
+                    len(obj),
+                )
+                return attempt
+        except json.JSONDecodeError:
+            continue
+
+    return None
+
+
 # ── Cloudflare Workers AI client ──────────────────────────────────────────────
 
 
 class CloudflareGenerationError(RuntimeError):
     """Raised when a live Cloudflare Workers AI request cannot produce an alert."""
+
+
+class CloudflareQuotaError(CloudflareGenerationError):
+    """The daily free-tier allocation (10,000 neurons) is spent.
+
+    Unlike transient rate limits this cannot succeed again before the next
+    00:00 UTC quota window, so the client enters a cooldown and the live feed
+    degrades to deterministic template generation instead of failing.
+    """
 
 
 class CloudflareClient:
@@ -433,7 +565,7 @@ class CloudflareClient:
         self._api_token = settings.cloudflare_api_token
         self._account_id = settings.cloudflare_account_id
         self._model = settings.cloudflare_model or "@cf/meta/llama-3.1-8b-instruct"
-        self._max_tokens = settings.cloudflare_max_tokens or 512
+        self._max_tokens = settings.cloudflare_max_tokens or 768
         self._session = requests.Session()
         if self._api_token:
             self._session.headers.update(
@@ -445,6 +577,11 @@ class CloudflareClient:
         """Whether the Cloudflare Workers AI client is ready to make live calls."""
         return bool(self._api_token and self._account_id)
 
+    @property
+    def quota_paused(self) -> bool:
+        """Whether live calls are paused because the daily quota is spent."""
+        return quota_paused()
+
     def generate_alert(
         self,
         inject_poison: bool = False,
@@ -455,20 +592,37 @@ class CloudflareClient:
         ``require_live`` guarantees the alert originated from Cloudflare Workers
         AI.  If Cloudflare is unavailable or returns invalid data, an error is
         raised rather than silently substituting a scripted template alert.
+        The one deliberate exception is a spent daily quota: live is impossible
+        until the 00:00 UTC reset, so a template is served and tagged via
+        ``generated_by`` (never silently passed off as a live generation).
         """
         alert_type = random.choice(_ALERT_TYPES)
+        generated_by = "cloudflare"
 
         if self.available:
-            try:
-                payload = self._generate_via_api(alert_type)
-            except Exception as exc:  # noqa: BLE001
-                if require_live:
-                    raise CloudflareGenerationError(
-                        f"Cloudflare Workers AI could not generate a live alert "
-                        f"({type(exc).__name__}: {exc}); no template alert was created."
-                    ) from exc
-                logger.warning("Cloudflare generation failed (%s) — using template.", exc)
+            if quota_paused():
+                # Daily quota known-exhausted — skip the doomed API call entirely.
                 payload = _generate_from_template(alert_type)
+                generated_by = "template-quota-fallback"
+            else:
+                try:
+                    payload = self._generate_via_api(alert_type)
+                except CloudflareQuotaError as exc:
+                    _pause_quota_until_next_utc_midnight()
+                    if require_live:
+                        raise
+                    logger.warning("%s — using template.", exc)
+                    payload = _generate_from_template(alert_type)
+                    generated_by = "template-quota-fallback"
+                except Exception as exc:  # noqa: BLE001
+                    if require_live:
+                        raise CloudflareGenerationError(
+                            f"Cloudflare Workers AI could not generate a live alert "
+                            f"({type(exc).__name__}: {exc}); no template alert was created."
+                        ) from exc
+                    logger.warning("Cloudflare generation failed (%s) — using template.", exc)
+                    payload = _generate_from_template(alert_type)
+                    generated_by = "template"
         elif require_live:
             raise CloudflareGenerationError(
                 "Cloudflare Workers AI is unavailable; set CLOUDFLARE_API_TOKEN and "
@@ -476,6 +630,7 @@ class CloudflareClient:
             )
         else:
             payload = _generate_from_template(alert_type)
+            generated_by = "template"
 
         if inject_poison:
             payload = _inject_poison(payload)
@@ -485,6 +640,7 @@ class CloudflareClient:
             "source_alert_id": source_id,
             "alert_type": alert_type,
             "raw_payload": payload,
+            "generated_by": generated_by,
         }
 
     def _generate_via_api(self, alert_type: str) -> dict[str, Any]:
@@ -498,33 +654,22 @@ class CloudflareClient:
         """
         now = datetime.now(timezone.utc)
         t1 = (now - timedelta(minutes=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        t2 = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
         now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Compact example — fewer tokens in the prompt means more budget for
+        # the model's output, reducing truncation on the 8b-instruct model.
         example = (
-            "{\n"
-            '  "source_ip": "10.0.4.27",\n'
-            '  "destination_ip": "185.220.101.7",\n'
-            '  "description": "Large outbound transfer to a known Tor exit node",\n'
-            '  "protocol": "TCP",\n'
-            '  "network_zone": "server-tier",\n'
-            '  "hostname": "SRV-DB-01",\n'
-            '  "user": "svc_backup",\n'
-            '  "log_entries": [\n'
-            f'    {{"timestamp": "{t1}", "event": "connection opened", "src": "10.0.4.27", "dst": "185.220.101.7"}},\n'
-            f'    {{"timestamp": "{t2}", "event": "45 MB transferred outbound", "src": "10.0.4.27", "dst": "185.220.101.7"}}\n'
-            "  ],\n"
-            '  "iocs": ["185.220.101.7"]\n'
-            "}"
+            '{"source_ip":"10.0.4.27","destination_ip":"185.220.101.7",'
+            '"description":"Large outbound transfer to Tor exit node",'
+            '"protocol":"TCP","network_zone":"server-tier",'
+            '"hostname":"SRV-DB-01","user":"svc_backup",'
+            f'"log_entries":[{{"timestamp":"{t1}","event":"45 MB outbound","src":"10.0.4.27","dst":"185.220.101.7"}}],'
+            '"iocs":["185.220.101.7"]}'
         )
         prompt = (
-            "You generate realistic cybersecurity alerts as strict JSON.\n\n"
-            f"Create ONE new alert of type \"{alert_type}\".\n"
-            f"Current UTC time is {now_str}; every timestamp must be within the last hour.\n\n"
-            "Use exactly this JSON shape, but with different values that fit the alert type:\n"
-            f"{example}\n\n"
-            "Output ONLY the JSON object itself. Every value must be a concrete literal "
-            "string, number, or array. Do not output any prose, markdown, code fences, "
-            "Python, template placeholders, or explanation before or after the JSON."
+            f'Generate ONE cybersecurity alert of type "{alert_type}" as a JSON object.\n'
+            f"UTC now: {now_str}. Timestamps must be within the last hour.\n"
+            f"Use this exact shape with different concrete values:\n{example}\n"
+            "Output ONLY the JSON object. No prose, no markdown, no code fences."
         )
 
         url = (
@@ -538,8 +683,14 @@ class CloudflareClient:
         )
 
         if resp.status_code != 200:
+            body = resp.text[:200]
+            if is_hard_quota_response(resp.status_code, body):
+                raise CloudflareQuotaError(
+                    f"Cloudflare Workers AI daily free quota exhausted — "
+                    f"HTTP {resp.status_code}: {body}"
+                )
             raise CloudflareGenerationError(
-                f"Cloudflare Workers AI HTTP {resp.status_code}: {resp.text[:200]}"
+                f"Cloudflare Workers AI HTTP {resp.status_code}: {body}"
             )
 
         data = resp.json()
@@ -568,6 +719,9 @@ class CloudflareClient:
         # breaks a naive json.loads with "Extra data" — the balanced scan plus
         # raw_decode below tolerate both.
         obj_text = _extract_first_json_object(text)
+        if obj_text is None:
+            # The model likely ran out of tokens mid-JSON.  Attempt repair.
+            obj_text = _try_repair_truncated_json(text)
         if obj_text is None:
             raise CloudflareGenerationError(
                 f"Cloudflare Workers AI response contained no JSON object: {text[:200]!r}"

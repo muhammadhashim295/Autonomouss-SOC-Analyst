@@ -1,18 +1,9 @@
 """Shared retry-with-backoff helper for ALL provider network calls.
 
-Every outbound call to the three providers (Groq — Primary Agent,
-Cerebras — Secondary Agent, Cloudflare Workers AI — live alert
-generator) is routed through :func:`post_with_backoff` so that a
-rate-limit (HTTP 429) or transient server/network error is retried with
-exponential backoff (1s, 2s, 4s — max 3 retries) instead of failing the
-investigation or the generation outright.
-
-Permanent errors (401/402/403/404/400 — bad key, no quota, org-blocked
-model, unknown model) are **not** retried: backing off cannot fix them,
-so they are returned immediately for the caller to handle (log + fall
-back to the deterministic generator, keeping the demo pipeline alive).
-
-Every retry is logged with provider, status, attempt and delay.
+Every outbound call to the two providers (Groq — Primary & Secondary Agents,
+Cloudflare Workers AI — live alert generator) is routed through
+:func:`post_with_backoff` so that a rate-limit (HTTP 429) or transient
+server/network error is retried with exponential backoff (1s, 2s, 4s — max 3 retries).
 """
 
 from __future__ import annotations
@@ -28,15 +19,36 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # HTTP statuses that are worth retrying: rate limits and transient
-# server-side / timeout conditions. 402 (payment/quota), 403 (org
-# blocked), 401 (bad key), 404 (unknown model), 400 (bad request) are
-# deliberately excluded — backoff cannot fix a permanent rejection.
+# server-side / network conditions. 403 (org blocked), 401 (bad key),
+# 404 (unknown model), 400 (bad request) are deliberately excluded —
+# backoff cannot fix a permanent rejection.
 TRANSIENT_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+
+# A 402/429 whose body reports a spent allocation window (e.g. Cloudflare's
+# "daily free allocation of 10,000 neurons") is NOT a momentary rate limit:
+# waiting seconds cannot fix it, only the next quota window.  Callers use
+# this to fail fast and degrade instead of burning the whole retry budget.
+_HARD_QUOTA_MARKERS = (
+    "daily free allocation",
+    "used up your daily",
+    "daily allowance",
+    "daily token limit",
+    "quota exhausted",
+    "quota exceeded",
+)
 
 
 def is_transient_status(status_code: int) -> bool:
     """Whether an HTTP status code represents a retryable condition."""
     return status_code in TRANSIENT_STATUS_CODES
+
+
+def is_hard_quota_response(status_code: int, text: str = "") -> bool:
+    """Whether a response reports a spent quota window (not retryable by backoff)."""
+    if status_code not in (402, 429):
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _HARD_QUOTA_MARKERS)
 
 
 def post_with_backoff(
@@ -59,7 +71,7 @@ def post_with_backoff(
     url : str
         Full endpoint URL.
     provider : str
-        Provider label used in log lines ("groq" | "cerebras" | "cloudflare").
+        Provider label used in log lines ("groq" | "cloudflare").
     stream : bool
         Whether to open the response for streaming (SSE) consumption.
     max_retries : int | None
@@ -67,7 +79,7 @@ def post_with_backoff(
     base_seconds : float | None
         First backoff delay; defaults to
         ``settings.provider_backoff_base_seconds`` (1.0).  Delays are
-        ``base * 2**attempt`` → 1s, 2s, 4s.
+        ``base * 2**attempt`` -> 1s, 2s, 4s.
 
     Returns
     -------
@@ -106,6 +118,16 @@ def post_with_backoff(
             raise
 
         if is_transient_status(response.status_code) and attempt < retries:
+            if is_hard_quota_response(response.status_code, response.text):
+                # Daily/hourly allocation spent — retrying until the quota
+                # window resets would just stall the caller.  Fail fast so the
+                # caller can degrade gracefully instead.
+                logger.error(
+                    "[%s] HTTP %s reports a spent quota window on POST %s — "
+                    "not retrying (backoff cannot reset a daily allocation)",
+                    provider, response.status_code, url,
+                )
+                return response
             delay = base * (2 ** attempt)
             logger.warning(
                 "[%s] transient HTTP %s on POST %s — retry %d/%d in %.1fs",

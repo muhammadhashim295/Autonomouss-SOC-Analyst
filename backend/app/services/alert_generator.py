@@ -1,9 +1,13 @@
 """Background Cloudflare Workers AI alert generator for the live Command Center.
 
 Runs as an asyncio task, generating alerts at a configurable interval (default
-3s — the stable point of the 2-3s window).  Live runs require a successful
-Cloudflare Workers AI response and never substitute scripted payload templates
-when Cloudflare is unavailable.
+3s — the stable point of the 2-3s window).  Live runs require successful
+Cloudflare Workers AI responses and do not substitute scripted payload templates
+for transient failures.  The one deliberate degradation path is Cloudflare's
+free-tier daily quota (10,000 neurons): once exhausted, live calls cannot
+succeed again until 00:00 UTC, so the feed keeps flowing on clearly-labelled
+template alerts (``generated_by`` / ``generator`` in the run status) instead of
+stalling.
 """
 
 from __future__ import annotations
@@ -20,7 +24,12 @@ from uuid import uuid4
 from app.core.config import settings
 from app.core.firewall import check_alert, sanitize_snippet
 from app.db.supabase_client import get_supabase
-from app.services.cloudflare_client import CloudflareClient, CloudflareGenerationError
+from app.services.cloudflare_client import (
+    CloudflareClient,
+    CloudflareGenerationError,
+    CloudflareQuotaError,
+    quota_resets_at,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +50,10 @@ class _GeneratorState:
         self.poison_ratio: float = settings.live_feed_poison_ratio
         self.org_id: Optional[str] = None
         self.last_error: Optional[str] = None
+        # Provenance of the alerts currently flowing: "cloudflare" for live LLM
+        # generations, "template" for transient-failure fallback, and
+        # "template-quota-fallback" while Cloudflare's daily quota is spent.
+        self.generated_by: str = "cloudflare"
         self._task: Optional[asyncio.Task[None]] = None
 
     def to_status_dict(self) -> dict[str, Any]:
@@ -53,6 +66,7 @@ class _GeneratorState:
 
         elapsed = (datetime.now(timezone.utc) - self.started_at).total_seconds()  # type: ignore[operator]
         remaining = max(0, self.duration_seconds - int(elapsed))
+        quota_reset = quota_resets_at()
         return {
             "status": "running",
             "run_id": self.run_id,
@@ -66,7 +80,9 @@ class _GeneratorState:
             "poison_ratio": self.poison_ratio,
             "interval_seconds": self.interval_seconds,
             "org_id": self.org_id,
-            "generator": "cloudflare",
+            "generator": self.generated_by,
+            "cloudflare_quota_paused": quota_reset is not None,
+            "cloudflare_quota_resets_at": quota_reset.isoformat() if quota_reset else None,
             "last_error": self.last_error,
         }
 
@@ -91,10 +107,6 @@ def start_generation(
     Returns the run details. The actual generation happens in an asyncio
     background task — this function returns immediately.
     """
-    from app.services import pregenerated_store
-
-    use_pregenerated = pregenerated_store.is_available()
-
     if _state.active:
         logger.info("Generation run %s is already active; returning current active run state.", _state.run_id)
         return {
@@ -105,7 +117,7 @@ def start_generation(
             "poison_ratio": _state.poison_ratio,
             "org_id": _state.org_id,
             "started_at": _state.started_at.isoformat() if _state.started_at else datetime.now(timezone.utc).isoformat(),
-            "generator": "pregenerated" if use_pregenerated else "cloudflare",
+            "generator": "cloudflare",
         }
 
     interval_seconds = (
@@ -115,9 +127,9 @@ def start_generation(
         settings.live_feed_poison_ratio if poison_ratio is None else poison_ratio
     )
 
-    if not use_pregenerated and not CloudflareClient().available:
+    if not CloudflareClient().available:
         raise CloudflareGenerationError(
-            "Neither pre-generated scenarios nor Cloudflare Workers AI is available; set CLOUDFLARE_API_TOKEN and "
+            "Cloudflare Workers AI is not available; set CLOUDFLARE_API_TOKEN and "
             "CLOUDFLARE_ACCOUNT_ID to generate alerts."
         )
 
@@ -137,6 +149,7 @@ def start_generation(
     _state.poison_ratio = poison_ratio
     _state.org_id = org_id
     _state.last_error = None
+    _state.generated_by = "cloudflare"
 
     # Launch the background asyncio task
     _state._task = asyncio.create_task(
@@ -151,7 +164,7 @@ def start_generation(
         "poison_ratio": poison_ratio,
         "estimated_alerts": total_planned,
         "started_at": _state.started_at.isoformat(),
-        "generator": "pregenerated" if use_pregenerated else "cloudflare",
+        "generator": "cloudflare",
     }
 
 
@@ -226,32 +239,53 @@ async def _generate_loop(
         concurrency,
     )
 
-    from app.services import pregenerated_store
-    use_pregenerated = pregenerated_store.is_available()
-
     async def _worker(worker_id: int) -> None:
         """Continuously generate alerts into the queue until stopped."""
+        consecutive_failures = 0
+        MAX_CONSECUTIVE_FAILURES = 3
         while not stop_workers.is_set() and _state.active:
             if datetime.now(timezone.utc).timestamp() >= end_time:
                 break
             should_poison = random.random() < poison_ratio
             try:
-                if use_pregenerated:
-                    alert_data = pregenerated_store.get_next_live_alert(inject_poison=should_poison)
-                    await asyncio.sleep(0.05)
-                else:
-                    alert_data = await asyncio.to_thread(
-                        cloudflare.generate_alert,
-                        inject_poison=should_poison,
-                        require_live=True,
-                    )
+                # After repeated Cloudflare failures, fall back to template
+                # generation so the live feed keeps flowing.  A spent daily
+                # quota skips straight to that fallback — live calls cannot
+                # succeed again before the 00:00 UTC reset.
+                use_live = (
+                    consecutive_failures < MAX_CONSECUTIVE_FAILURES
+                    and not cloudflare.quota_paused
+                )
+                alert_data = await asyncio.to_thread(
+                    cloudflare.generate_alert,
+                    inject_poison=should_poison,
+                    require_live=use_live,
+                )
+                consecutive_failures = 0  # reset on success
+                _state.generated_by = alert_data.get("generated_by", "cloudflare")
+                if _state.generated_by == "cloudflare":
+                    _state.last_error = None  # clear any stale failure notice
             except asyncio.CancelledError:
                 raise
+            except CloudflareQuotaError as exc:
+                # First quota hit: the client has paused live calls until the
+                # daily reset.  Tell the UI once, then keep flowing on templates.
+                consecutive_failures = 0
+                _state.generated_by = "template-quota-fallback"
+                _state.last_error = (
+                    "Cloudflare Workers AI daily free quota (10,000 neurons) is "
+                    "exhausted — live generation is paused until 00:00 UTC. The "
+                    "feed continues on deterministic template alerts."
+                )
+                logger.warning("Worker %d: %s", worker_id, exc)
+                continue
             except CloudflareGenerationError as exc:
+                consecutive_failures += 1
                 _state.last_error = str(exc)
                 logger.warning(
-                    "Worker %d: Cloudflare generation failed — retrying: %s",
-                    worker_id, exc,
+                    "Worker %d: Cloudflare generation failed (attempt %d/%d) — %s",
+                    worker_id, consecutive_failures, MAX_CONSECUTIVE_FAILURES,
+                    exc,
                 )
                 await asyncio.sleep(0.5)
                 continue
@@ -281,7 +315,7 @@ async def _generate_loop(
 
     try:
         while _state.active and datetime.now(timezone.utc).timestamp() < end_time:
-            # Wait for the next pre-generated alert.  The timeout only fires if
+            # Wait for the next generated alert.  The timeout only fires if
             # every worker is stuck (rate-limited/slow), so a single bad call
             # never kills the run — we skip the tick and keep the feed alive.
             try:
@@ -314,12 +348,12 @@ async def _generate_loop(
 
                 target_org_id = next(org_cycle) if org_cycle else None
 
-                # Insert alert into Supabase (blocking call kept off the loop)
+                # Insert alert into Supabase: flagged alerts go directly to in_review
                 alert_row = {
                     "source_alert_id": alert_data["source_alert_id"],
                     "alert_type": alert_data["alert_type"],
                     "raw_payload": alert_data["raw_payload"],
-                    "status": "pending",
+                    "status": "in_review" if flags else "pending",
                 }
                 if target_org_id:
                     alert_row["org_id"] = target_org_id
@@ -342,7 +376,7 @@ async def _generate_loop(
                     assigned_org = result.data[0].get("org_id") or target_org_id
                     _state.alerts_generated += 1
 
-                    # Write firewall flags if any
+                    # Write firewall flags and escalate directly if flagged
                     if flags:
                         raw_json = json.dumps(
                             alert_data["raw_payload"], ensure_ascii=False
@@ -366,6 +400,41 @@ async def _generate_loop(
                             await asyncio.to_thread(
                                 supabase.table("firewall_flags").insert(flag_rows).execute
                             )
+
+                        # Escalate directly to human analyst: write awaiting_approval case
+                        action_data = {
+                            "action": "escalate_to_human",
+                            "reason": f"Firewall flag detected: {', '.join(flags)}",
+                            "target": "security_analyst",
+                            "reasoning": f"FIREWALL ALERT FLAGGED: Log poisoning or adversarial pattern detected. Flags: {', '.join(flags)}. Escalated directly to human analyst without agent investigation.",
+                            "self_audit": "Automated investigation bypassed by security firewall.",
+                        }
+                        case_row = {
+                            "alert_id": alert_id,
+                            "mode": "agentic",
+                            "primary_verdict": "true_positive",
+                            "primary_confidence": 1.0,
+                            "secondary_verdict": None,
+                            "attack_technique": "T1566",
+                            "impact_level": "high_impact",
+                            "action_taken": json.dumps(action_data),
+                            "action_status": "awaiting_approval",
+                            "primary_provider": "firewall",
+                            "secondary_provider": None,
+                            **({"org_id": assigned_org} if assigned_org else {}),
+                        }
+                        try:
+                            await asyncio.to_thread(
+                                supabase.table("cases").insert(case_row).execute
+                            )
+                        except Exception:
+                            case_row.pop("org_id", None)
+                            try:
+                                await asyncio.to_thread(
+                                    supabase.table("cases").insert(case_row).execute
+                                )
+                            except Exception:
+                                pass
 
                     logger.info(
                         "Alert %s [%s] inserted (poison=%s, flagged=%d, org=%s)",

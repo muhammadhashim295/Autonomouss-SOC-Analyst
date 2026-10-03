@@ -28,17 +28,21 @@ class Settings(BaseSettings):
     # ── AlienVault OTX (required for IOC enrichment, Phase 6+) ────────
     otx_api_key: str = ""
 
-    # ── Provider 1: Groq — Primary Alert Triage Agent ─────────────────
+    # ── AI Provider 1: Groq — Primary & Secondary Agent Reasoning ─────
     # OpenAI-compatible Chat Completions API with SSE streaming.
+    # Powers both the Primary Alert Triage Agent and the Secondary Deep
+    # Investigation Agent.
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-120b"
+    groq_secondary_model: str = "openai/gpt-oss-20b"
+    # Output-token cap per agent report.  Left unset, Groq applies the model
+    # default, which can truncate a long evidence-cited report mid-sentence
+    # (finish_reason="length") — the truncated Primary verdict then never
+    # cleanly hands off to the Secondary.  1600 comfortably fits a full
+    # structured report for both reasoning models without stalling the stream.
+    groq_max_tokens: int = 1600
 
-    # ── Provider 2: Cerebras — Secondary Deep Investigation Agent ─────
-    # OpenAI-compatible Chat Completions API with SSE streaming.
-    cerebras_api_key: str = ""
-    cerebras_model: str = "gpt-oss-120b"
-
-    # ── Provider 3: Cloudflare Workers AI — live alert generator ──────
+    # ── AI Provider 2: Cloudflare Workers AI — live alert generator ───
     # REST: /client/v4/accounts/{account_id}/ai/run/{model}
     cloudflare_api_token: str = ""
     cloudflare_account_id: str = ""
@@ -46,7 +50,7 @@ class Settings(BaseSettings):
     # Output-token cap per generation.  Latency scales with this: ~8s at 1024
     # vs ~3-4s at 512 on the free tier.  512 keeps alert JSON complete while
     # staying fast enough for the concurrent pool to sustain the feed cadence.
-    cloudflare_max_tokens: int = 512
+    cloudflare_max_tokens: int = 768
 
     # ── Live feed cadence ──────────────────────────────────────────────
     # One new alert every N seconds (2-3s window; 3s is the stable default).

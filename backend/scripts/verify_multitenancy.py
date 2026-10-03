@@ -67,10 +67,10 @@ def test_auth_and_isolation(org_map: dict):
 
     # Accounts to test
     test_creds = {
-        "admin": ("admin@soc.local", "Admin@SOC2026!"),
-        "ubl": ("ubl-analyst@ubl.com.pk", "UBL@Analyst2026!"),
-        "indus": ("indus-analyst@indus.health", "Indus@Analyst2026!"),
-        "smiu": ("smiu-analyst@smiu.edu.pk", "SMIU@Analyst2026!"),
+        "admin": ("admin@soc.local", "Password123!"),
+        "ubl": ("ubl-analyst@ubl.com.pk", "Password123!"),
+        "indus": ("indus-analyst@indus.health", "Password123!"),
+        "smiu": ("smiu-analyst@smiu.edu.pk", "Password123!"),
     }
 
     tokens = {}

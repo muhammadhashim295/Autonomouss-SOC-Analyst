@@ -209,25 +209,6 @@ export async function getFirewallFlags(alertId = null, orgId = null) {
   return res.json()
 }
 
-// ── Settings / Mode ──
-
-export async function getMode() {
-  const res = await fetch(endpoint('/settings/mode'), {
-    headers: authHeaders(),
-  })
-  if (!res.ok) throw new Error(`Failed to get mode: ${res.status}`)
-  return res.json()
-}
-
-export async function setMode(mode) {
-  const res = await fetch(endpoint('/settings/mode'), {
-    method: 'PUT',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ mode }),
-  })
-  if (!res.ok) throw new Error(`Failed to set mode: ${res.status}`)
-  return res.json()
-}
 
 // ── Cases ──
 

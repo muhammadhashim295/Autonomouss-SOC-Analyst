@@ -1,285 +1,513 @@
+import React from 'react'
+
 /**
- * FlowChart — Interactive, glassmorphic node graph visualization matching
- * the investigation workflow branches:
+ * FlowChart — Real-Time Visual Workflow Pipeline Architecture
  *
- * Row 1: Live Env → Alert Queue → Log Firewall → [Escalate if Poisoned] → Primary Agent
- * Row 2: Primary Agent Details & Verdict Branch
- * Row 3: Secondary Agent Details & Re-investigation Cross-Check
- * Row 4: Action Impact Gating → [Auto Execute or Escalate to Human Analyst]
+ * A connected, left-to-right pipeline strip whose nodes light up in real time as
+ * the focused alert advances, with animated directional connectors showing the
+ * live path and a pulsing "current stage" indicator:
+ *
+ * 1. Ingestion (Live Ingest) →
+ * 2. Log Firewall            → [Clean] or [⚠ Quarantined]
+ * 3. Primary Triage          → [TP] or [✓ FP Auto-Close]
+ * 4. Secondary Auditor       → [Confirmed] or [Disputed]
+ * 5. Response Action Engine  → [Autonomous] or [⚠ Human Gated]
+ * 6. Audit & Memory Vault
+ *
+ * Below the strip, a Decision Branch matrix explains which gating rule fired.
  */
 
-const BRANCH_LABELS = {
-  firewall: { left: '③a POISONED (FLAGGED)', right: '③b CLEAN (PROCEED)' },
-  primary: { left: '④a FALSE POSITIVE', right: '④b TRUE POSITIVE' },
-  secondary: { left: '⑤ FALSE POSITIVE', right: '⑤ TRUE POSITIVE' },
-  action: { left: '⑦ AUTONOMOUS EXECUTE', right: '⑦ HUMAN APPROVAL REQD' },
-}
+const ADVANCED = ['active', 'complete', 'error', 'warning', 'bypassed']
 
-export default function FlowChart({ stages, firewallFlags, primaryData, secondaryData, caseResult }) {
-  const hasFlags = firewallFlags && firewallFlags.length > 0
+export default function FlowChart({
+  stages = {},
+  firewallFlags = null,
+  primaryData = null,
+  secondaryData = null,
+  caseResult = null,
+}) {
+  // Determine decision branches from live data
+  const hasFlags = Boolean(firewallFlags && firewallFlags.length > 0)
+  const isFirewallComplete = stages?.firewall === 'complete' || hasFlags
+  const isFirewallActive = stages?.firewall === 'active'
 
-  const firewallBranch = hasFlags ? 'left' : 'right'
   const primaryVerdict = primaryData?.verdict
-  const primaryBranch = primaryVerdict === 'false_positive' ? 'left' : primaryVerdict === 'true_positive' ? 'right' : null
-  const secondaryVerdict = secondaryData?.verdict
-  const secondaryBranch = secondaryVerdict === 'false_positive' ? 'left' : secondaryVerdict === 'true_positive' ? 'right' : null
-  const actionBranch = caseResult?.action_status === 'executed' ? 'left'
-    : caseResult?.action_status === 'awaiting_approval' || caseResult?.action_status === 'escalated' ? 'right' : null
+  const isPrimaryFP = primaryVerdict === 'false_positive'
+  const isPrimaryTP = primaryVerdict === 'true_positive'
+  const isPrimaryActive = stages?.primary === 'active' || primaryData?.status === 'thinking'
 
-  const ns = (key) => stages[key] || 'pending'
+  const secondaryVerdict = secondaryData?.verdict || secondaryData?.extra?.secondary_verdict || secondaryData?.secondary_verdict
+  const isSecondaryFP = secondaryVerdict === 'false_positive'
+  const isSecondaryTP = secondaryVerdict === 'true_positive' || secondaryVerdict === 'agree'
+  const isSecondaryDispute = secondaryVerdict === 'disagree'
+  const isSecondaryActive = stages?.secondary === 'active' || secondaryData?.status === 'thinking'
+
+  const actionStatus = caseResult?.action_status
+  const isActionExecuted = actionStatus === 'executed'
+  const isActionGated = actionStatus === 'awaiting_approval' || actionStatus === 'escalated'
+  const isActionActive = stages?.action === 'active'
+
+  const st = (key) => stages?.[key] || 'pending'
+  const dbActive = st('db') === 'active'
+
+  // ── Resolved definition for each pipeline node ──
+  const nodes = [
+    {
+      id: 'liveEnv', step: '1', title: 'Ingestion', provider: 'Live Ingest Pipeline', icon: '📥',
+      status: st('liveEnv') === 'active' ? 'active' : st('liveEnv') === 'complete' ? 'complete' : 'ready',
+      statusLabel: st('liveEnv') === 'active' ? '▶ Streaming' : 'Telemetry Active',
+      description: 'Normalized SIEM log ingest',
+      highlight: !hasFlags,
+    },
+    {
+      id: 'firewall', step: '2', title: 'Log Firewall', provider: 'Rule Sanitizer', icon: '🛡',
+      status: hasFlags ? 'error' : isFirewallActive ? 'active' : isFirewallComplete ? 'complete' : 'ready',
+      statusLabel: hasFlags ? '⚠ POISON DETECTED' : isFirewallActive ? '▶ Scanning…' : isFirewallComplete ? '✓ Sanitized Clean' : '24 Pattern Rules',
+      description: hasFlags ? 'Quarantine triggered' : 'Prompt injection check',
+      highlight: hasFlags || isFirewallActive || isFirewallComplete,
+      isAlert: hasFlags,
+    },
+    {
+      id: 'primary', step: '3', title: 'Primary Triage', provider: 'High-Speed Reasoning Core', icon: '▣',
+      status: hasFlags ? 'bypassed' : isPrimaryActive ? 'active' : st('primary') === 'complete' ? 'complete' : 'ready',
+      statusLabel:
+        hasFlags ? 'Bypassed (0 Calls)' :
+        isPrimaryTP ? '⚡ True Positive' :
+        isPrimaryFP ? '✓ False Positive' :
+        isPrimaryActive ? '▶ Reasoning Live…' : 'Signal Classifier',
+      description:
+        hasFlags ? 'Bypassed by firewall' :
+        isPrimaryTP ? 'Threat confirmed' :
+        isPrimaryFP ? 'Benign activity' : 'Fast MITRE taxonomy',
+      highlight: !hasFlags && (isPrimaryTP || isPrimaryFP || isPrimaryActive),
+    },
+    {
+      id: 'secondary', step: '4', title: 'Secondary Auditor', provider: 'Forensic Auditor Core', icon: '◫',
+      status:
+        hasFlags || isPrimaryFP ? 'bypassed' :
+        isSecondaryActive ? 'active' :
+        st('secondary') === 'complete' ? 'complete' : 'ready',
+      statusLabel:
+        hasFlags ? 'Bypassed (0 Calls)' :
+        isPrimaryFP ? 'Bypassed (FP Closed)' :
+        isSecondaryTP ? '⚡ Threat Validated' :
+        isSecondaryDispute ? '⚠ Disputed' :
+        isSecondaryFP ? '✓ Overruled FP' :
+        isSecondaryActive ? '▶ Auditing Live…' : 'Cross-Validation',
+      description:
+        hasFlags || isPrimaryFP ? 'Zero agent invocation' :
+        isSecondaryTP ? 'Dual-agent consensus' : 'Independent verification',
+      highlight: !hasFlags && !isPrimaryFP && (isSecondaryTP || isSecondaryActive),
+    },
+    {
+      id: 'action', step: '5', title: 'Response Engine', provider: 'Policy Gating', icon: '⚡',
+      status:
+        hasFlags ? 'bypassed' :
+        isActionActive ? 'active' :
+        isActionExecuted ? 'complete' :
+        isActionGated ? 'warning' : 'ready',
+      statusLabel:
+        hasFlags ? 'Bypassed' :
+        isActionActive ? '▶ Deciding…' :
+        isActionExecuted ? '✓ Autonomous Executed' :
+        isActionGated ? '⚠ Human Approval Gated' : 'Action Catalog',
+      description:
+        hasFlags ? 'Direct quarantine' :
+        isActionExecuted ? 'Perimeter block active' :
+        isActionGated ? 'Impact threshold exceeded' : 'Risk & impact matrix',
+      highlight: !hasFlags && (isActionExecuted || isActionGated || isActionActive),
+      isWarning: isActionGated,
+    },
+    {
+      id: 'db', step: '6', title: 'Audit & Memory Vault', provider: 'Case Intel & Ledger', icon: '💾',
+      status: st('db') === 'complete' ? 'complete' : dbActive ? 'active' : 'ready',
+      statusLabel: st('db') === 'complete' ? '✓ Record Persisted' : dbActive ? '▶ Writing…' : 'Audit Ready',
+      description:
+        caseResult?.case_id ? `Case: ${caseResult.case_id.slice(0, 8)}…` :
+        'Case memory writeback',
+      highlight: st('db') === 'complete' || dbActive,
+    },
+  ]
+
+  // ── Current live stage indicator ──
+  const activeNode = nodes.find((n) => n.status === 'active')
+  const isTerminal = caseResult != null || hasFlags
+  let currentStageText = 'Standby — awaiting alert'
+  let currentStageColor = 'text-slate-400'
+  let currentPulse = false
+  if (activeNode) {
+    currentStageText = activeNode.title
+    currentStageColor = activeNode.status === 'active' ? 'text-cyan-300' : 'text-emerald-300'
+    currentPulse = true
+  } else if (isActionGated || (hasFlags)) {
+    currentStageText = 'Awaiting Human Approval'
+    currentStageColor = 'text-amber-300'
+    currentPulse = true
+  } else if (isTerminal) {
+    currentStageText = 'Pipeline Complete'
+    currentStageColor = 'text-emerald-300'
+  }
+
+  // Connector between node i and i+1 is "lit" once the flow reaches node i+1
+  const connectorLit = (i) => {
+    const next = nodes[i + 1]
+    const self = nodes[i]
+    if (!next) return false
+    if (next.status !== 'ready') return true
+    return ADVANCED.includes(self.status) && self.status !== 'active'
+  }
+  // A connector is "flowing" (animated) when the next node is actively working
+  const connectorFlowing = (i) => nodes[i + 1]?.status === 'active'
+
+  // Selected branch summary for the active alert
+  let activeBranchText = 'Autonomous Threat Intercept'
+  let activeBranchColor = 'text-cyan-400'
+  if (hasFlags) {
+    activeBranchText = 'Branch: Firewall Adversarial Quarantine (Direct Human Escalation, 0 Agent Calls)'
+    activeBranchColor = 'text-red-400'
+  } else if (isPrimaryFP) {
+    activeBranchText = 'Branch: False Positive Auto-Close & RAG Memory Store (0 Secondary Calls)'
+    activeBranchColor = 'text-emerald-400'
+  } else if (isActionGated) {
+    activeBranchText = 'Branch: High-Impact Action Gated — Human Authorization Required'
+    activeBranchColor = 'text-amber-400'
+  } else if (isActionExecuted) {
+    activeBranchText = 'Branch: Dual-Agent Threat Confirmation — Autonomous Containment Executed'
+    activeBranchColor = 'text-cyan-400'
+  }
 
   return (
-    <div className="glass-panel rounded-2xl p-6 overflow-x-auto border-emerald-500/20">
-      <div className="flex items-center justify-between mb-5">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-          <h3 className="font-display font-bold text-xs uppercase tracking-wider text-slate-300">
-            Autonomous Pipeline Flow Architecture
-          </h3>
-        </div>
-        <span className="font-mono text-[11px] text-slate-500">Live Stage Tracker</span>
-      </div>
+    <div className="glass-panel rounded-2xl p-5 border-slate-800/80 bg-slate-950/70 space-y-6 shadow-2xl relative overflow-hidden">
 
-      <div className="flex flex-col gap-1 min-w-[760px]">
-        
-        {/* ══ Row 1: Live Env → Queue → Firewall → Primary Agent ══ */}
-        <div className="flex items-center gap-0">
-          <Node label="Live Environment" sub="① Org Ingestion" icon="◉" status={ns('liveEnv')} />
-          <Arrow active={ns('liveEnv') !== 'pending'} />
-          <Node label="Alert Queue" sub="Feed Buffer" icon="☰" status={ns('liveEnv')} />
-          <Arrow active={ns('liveEnv') !== 'pending'} />
-          <Node label="Log Firewall" sub="② Poison Check" icon="🛡" status={hasFlags ? 'error' : ns('firewall')} />
-          <Arrow taken={firewallBranch === 'right'} active={ns('firewall') !== 'pending'} />
-          <Node label="Primary Agent" sub="③ Triage Signal" icon="▣" status={ns('primary')}
-            active={ns('primary') !== 'pending'} glow={ns('primary') === 'active'} />
-        </div>
-
-        {/* Firewall escalate branch */}
-        <div className="flex items-start ml-[calc(2*(150px+16px)+2*44px+16px)] pl-10">
-          <div className="flex flex-col items-center -mt-1">
-            <BranchArrow label={BRANCH_LABELS.firewall.left} taken={firewallBranch === 'left'} direction="up" />
-            {firewallBranch === 'left' && (
-              <Node label="Firewall Flagged" sub="Logged + Quarantined" icon="⚠" status="error" small />
-            )}
+      {/* ── Top Header: Title & Live Current-Stage Indicator ── */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/70 pb-3.5">
+        <div className="flex items-center gap-3">
+          <div className="relative flex items-center justify-center">
+            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping absolute" />
+            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.9)]" />
+          </div>
+          <div>
+            <h3 className="font-display font-bold text-sm tracking-wide text-white uppercase flex items-center gap-2">
+              <span>Autonomous Workflow Pipeline</span>
+              <span className="text-[10px] font-mono font-normal px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                LIVE VISUAL GRAPH
+              </span>
+            </h3>
+            <p className="text-[11px] font-mono text-slate-400 mt-0.5">
+              Dual-Agent Reasoning Highway • Sovereign Dual-Core Pipeline
+            </p>
           </div>
         </div>
 
-        {/* ══ Row 2: Primary Agent Detail ══ */}
-        <div className="mt-4 flex items-start gap-0">
-          <div className="flex-shrink-0" style={{ width: 'calc(3*(150px+16px) + 2*44px + 16px)' }} />
-          <AgentNode
-            name="Primary Triage Agent"
-            status={ns('primary')}
-            data={primaryData}
-            branchLabels={BRANCH_LABELS.primary}
-            branchTaken={primaryBranch}
+        {/* Current live stage badge (pulses while processing) */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900/90 border border-cyan-500/30 font-mono text-xs shadow-[0_0_12px_rgba(34,211,238,0.15)]">
+            <span className={`w-2 h-2 rounded-full ${currentPulse ? 'bg-cyan-400 animate-pulse' : isTerminal ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+            <span className="text-slate-400 text-[11px]">NOW:</span>
+            <span className={`font-semibold text-[11px] uppercase tracking-wide ${currentStageColor}`}>
+              {currentStageText}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 font-mono text-xs">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-slate-400 text-[11px]">Current Path:</span>
+            <span className={`font-semibold text-[11px] ${activeBranchColor}`}>
+              {activeBranchText}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Live Pipeline Strip: 6 nodes wired by animated directional connectors ──
+          Nodes flex to the available column width with a low readable minimum, so all
+          six stages stay on screen in the shared command-center column; scrolling is
+          only a last-resort fallback on very narrow viewports. */}
+      <div className="relative">
+        <div className="flex items-stretch gap-0 overflow-x-auto pb-1">
+          {nodes.map((node, i) => (
+            <React.Fragment key={node.id}>
+              <div className="flex-1 min-w-[92px] lg:min-w-[104px] xl:min-w-[124px]">
+                <WorkflowNode {...node} />
+              </div>
+              {i < nodes.length - 1 && (
+                <Connector lit={connectorLit(i)} flowing={connectorFlowing(i)} bypassed={nodes[i + 1].status === 'bypassed'} />
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+        <div className="lg:hidden text-[10px] font-mono text-slate-600 mt-1.5 text-right">
+          ↔ drag bar to see all 6 stages
+        </div>
+      </div>
+
+      {/* ── Visual Decision Branch Matrix & Pathways ── */}
+      <div className="space-y-3 pt-3 border-t border-slate-800/70">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs font-bold text-slate-300 uppercase tracking-wider">
+              Decision Branch Architecture
+            </span>
+            <span className="text-[10px] font-mono text-slate-500">
+              (Live Flow Gating & Resolution Rules)
+            </span>
+          </div>
+
+          <span className="text-[11px] font-mono text-cyan-400">
+            Active Stage Resolution
+          </span>
+        </div>
+
+        {/* 4 Interactive Visual Decision Branches */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+
+          {/* Branch 1: Firewall Check */}
+          <BranchCard
+            stageNumber="01"
+            title="Log Poison Firewall"
+            rule="24 Regex & Heuristic Injection Rules"
+            activeChoice={hasFlags ? 'poison' : isFirewallComplete ? 'clean' : null}
+            choices={[
+              {
+                id: 'clean',
+                label: 'Clean Log Payload',
+                sub: 'Proceed to Primary Agent reasoning',
+                color: 'border-emerald-500/40 bg-emerald-950/20 text-emerald-300',
+                badge: 'FORWARD',
+              },
+              {
+                id: 'poison',
+                label: 'Adversarial Prompt Detected',
+                sub: 'Direct Human Escalation (0 Agent calls)',
+                color: 'border-red-500/40 bg-red-950/30 text-red-300 glow-red',
+                badge: 'QUARANTINE',
+              },
+            ]}
           />
-          {primaryBranch === 'right' && (
-            <>
-              <Arrow taken={true} active={true} />
-              <Node label="Secondary Agent" sub="⑤ Deep Cross-Check" icon="◫" status={ns('secondary')}
-                active={ns('secondary') !== 'pending'} glow={ns('secondary') === 'active'} />
-            </>
-          )}
+
+          {/* Branch 2: Primary Verdict */}
+          <BranchCard
+            stageNumber="02"
+            title="Primary Triage Verdict"
+            rule="High-Speed Signal Classification"
+            activeChoice={hasFlags ? null : isPrimaryFP ? 'fp' : isPrimaryTP ? 'tp' : null}
+            choices={[
+              {
+                id: 'fp',
+                label: 'False Positive (Benign)',
+                sub: 'Auto-Close & RAG Memory (0 Secondary calls)',
+                color: 'border-emerald-500/40 bg-emerald-950/20 text-emerald-300',
+                badge: 'AUTO-CLOSE',
+              },
+              {
+                id: 'tp',
+                label: 'True Positive (Actionable)',
+                sub: 'Escalate to Secondary Auditor Agent',
+                color: 'border-cyan-500/40 bg-cyan-950/20 text-cyan-300',
+                badge: 'CROSS-CHECK',
+              },
+            ]}
+          />
+
+          {/* Branch 3: Secondary Audit */}
+          <BranchCard
+            stageNumber="03"
+            title="Secondary Cross-Check"
+            rule="Independent Re-evaluation & Consensus"
+            activeChoice={hasFlags || isPrimaryFP ? null : isSecondaryTP ? 'confirm' : (isSecondaryFP || isSecondaryDispute) ? 'dispute' : null}
+            choices={[
+              {
+                id: 'confirm',
+                label: 'Threat Confirmed',
+                sub: 'Consensus reached ➔ Action Gating Engine',
+                color: 'border-purple-500/40 bg-purple-950/20 text-purple-300',
+                badge: 'ADVANCE',
+              },
+              {
+                id: 'dispute',
+                label: 'Verdict Disagreement',
+                sub: 'FP override or escalated consensus review',
+                color: 'border-amber-500/40 bg-amber-950/20 text-amber-300',
+                badge: 'AUDIT',
+              },
+            ]}
+          />
+
+          {/* Branch 4: Action Impact Gating */}
+          <BranchCard
+            stageNumber="04"
+            title="Impact Gating Engine"
+            rule="Blast Radius & Sensitivity Catalog"
+            activeChoice={hasFlags ? null : isActionExecuted ? 'standard' : isActionGated ? 'high' : null}
+            choices={[
+              {
+                id: 'standard',
+                label: 'Standard Impact Action',
+                sub: 'Autonomous Mitigation (IP Block / Host Isolate)',
+                color: 'border-cyan-500/40 bg-cyan-950/20 text-cyan-300',
+                badge: 'AUTONOMOUS',
+              },
+              {
+                id: 'high',
+                label: 'High Impact Action',
+                sub: 'HALT ➔ Require Human Analyst Approval',
+                color: 'border-amber-500/40 bg-amber-950/25 text-amber-300 glow-amber',
+                badge: 'HUMAN GATED',
+              },
+            ]}
+          />
+
         </div>
+      </div>
 
-        {/* Primary FP branch */}
-        {primaryBranch === 'left' && (
-          <div className="mt-2 flex items-start gap-0">
-            <div className="flex-shrink-0" style={{ width: 'calc(3*(150px+16px) + 2*44px + 16px)' }} />
-            <div className="flex items-center">
-              <BranchArrow label={BRANCH_LABELS.primary.left} taken={true} direction="down" />
-              <Node label="RAG Memory Store" sub="④ FP Record Indexed" icon="▪" status="complete" small />
-            </div>
-          </div>
+    </div>
+  )
+}
+
+/** Animated directional connector between two pipeline nodes */
+function Connector({ lit, flowing, bypassed }) {
+  const lineColor = lit
+    ? bypassed ? 'bg-slate-700' : 'bg-emerald-500'
+    : 'bg-slate-800'
+
+  return (
+    <div className="flex-shrink-0 w-4 sm:w-5 lg:w-6 flex items-center justify-center relative">
+      <div className={`relative w-full h-0.5 ${lineColor} transition-colors duration-500`}>
+        {/* arrow head */}
+        <div
+          className={`absolute right-0 top-1/2 -translate-y-1/2 w-0 h-0
+            border-t-[4px] border-t-transparent border-b-[4px] border-b-transparent border-l-[7px]
+            ${lit && !bypassed ? 'border-l-emerald-400' : 'border-l-slate-700'}`}
+        />
+        {/* traveling packet pulse while the next stage is actively working */}
+        {flowing && (
+          <span className="absolute top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-cyan-300 shadow-[0_0_8px_rgba(34,211,238,0.9)] animate-pipeflow" />
         )}
-
-        {/* ══ Row 3: Secondary Agent Detail ══ */}
-        {primaryBranch === 'right' && (
-          <div className="mt-4 flex items-start gap-0">
-            <div className="flex-shrink-0" style={{ width: 'calc(4*(150px+16px) + 3*44px + 16px)' }} />
-            <AgentNode
-              name="Secondary Agent"
-              status={ns('secondary')}
-              data={secondaryData}
-              branchLabels={BRANCH_LABELS.secondary}
-              branchTaken={secondaryBranch}
-            />
-          </div>
-        )}
-
-        {/* Secondary FP → RAG Memory */}
-        {secondaryBranch === 'left' && primaryBranch === 'right' && (
-          <div className="mt-2 flex items-start gap-0">
-            <div className="flex-shrink-0" style={{ width: 'calc(4*(150px+16px) + 3*44px + 16px)' }} />
-            <div className="flex items-center">
-              <BranchArrow label={BRANCH_LABELS.secondary.left} taken={true} direction="down" />
-              <Node label="RAG Memory Store" sub="⑤ FP Record Indexed" icon="▪" status="complete" small />
-            </div>
-          </div>
-        )}
-
-        {/* ══ Row 4: Action Pipeline & Human Gating ══ */}
-        {secondaryBranch === 'right' && (
-          <div className="mt-4 flex items-start gap-0">
-            <div className="flex-shrink-0" style={{ width: 'calc(4*(150px+16px) + 3*44px + 16px)' }} />
-            <Node label="Impact Gating" sub="⑥ Response Catalog" icon="⚡" status={ns('action')} />
-            <Arrow taken={actionBranch === 'left'} active={ns('action') !== 'pending'} />
-            <Node label="Execution Logged" sub="⑦ Case Closed" icon="▪" status={ns('db')} />
-            {actionBranch === 'right' && (
-              <>
-                <BranchArrow label={BRANCH_LABELS.action.right} taken={true} direction="right" />
-                <Node label="Human Approval" sub="Awaiting Analyst" icon="⚠" status="error" small />
-              </>
-            )}
-          </div>
-        )}
-
       </div>
     </div>
   )
 }
 
-function Node({ label, sub, icon, status, active, glow, small }) {
-  const colors = {
-    pending: 'border-slate-800 bg-slate-950/60 text-slate-500',
-    active: 'border-emerald-500/60 bg-emerald-500/15 text-emerald-300 glow-green font-semibold',
-    complete: 'border-emerald-700/50 bg-emerald-950/30 text-emerald-400',
-    error: 'border-red-500/60 bg-red-500/15 text-red-300 glow-red font-semibold',
+/** Individual Pipeline Stage Node */
+function WorkflowNode({
+  step,
+  title,
+  provider,
+  icon,
+  status,
+  statusLabel,
+  description,
+  highlight,
+  isAlert,
+  isWarning,
+}) {
+  const statusStyles = {
+    active: 'border-cyan-500/70 bg-cyan-950/30 shadow-[0_0_18px_rgba(6,182,212,0.35)] text-white ring-2 ring-cyan-400/40',
+    complete: 'border-emerald-500/50 bg-emerald-950/20 shadow-[0_0_12px_rgba(16,185,129,0.15)] text-white',
+    error: 'border-red-500/60 bg-red-950/30 shadow-[0_0_18px_rgba(239,68,68,0.3)] text-white glow-red',
+    warning: 'border-amber-500/60 bg-amber-950/25 shadow-[0_0_15px_rgba(245,158,11,0.2)] text-white glow-amber',
+    bypassed: 'border-slate-800 bg-slate-950/40 text-slate-500 opacity-60',
+    ready: 'border-slate-800/80 bg-slate-900/30 text-slate-400',
   }
 
-  const iconColors = {
-    pending: 'text-slate-600',
-    active: 'text-emerald-400 text-glow-green',
-    complete: 'text-emerald-400',
-    error: 'text-red-400 text-glow-red',
+  const badgeStyles = {
+    active: 'bg-cyan-500/25 text-cyan-200 border-cyan-500/50 animate-pulse',
+    complete: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+    error: 'bg-red-500/20 text-red-400 border-red-500/40 font-bold',
+    warning: 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-bold',
+    bypassed: 'bg-slate-900/60 text-slate-500 border-slate-800',
+    ready: 'bg-slate-950 text-slate-500 border-slate-800',
   }
 
   return (
     <div
-      className={`flex-shrink-0 rounded-xl border transition-all duration-300 glass-panel ${colors[status]} ${
-        small ? 'px-3 py-2' : 'px-3.5 py-2.5'
-      }`}
-      style={small ? { minWidth: 120 } : { minWidth: 150 }}
+      className={`rounded-2xl p-2.5 lg:p-3.5 border transition-all duration-300 flex flex-col justify-between h-full min-h-[145px] ${
+        statusStyles[status] || statusStyles.ready
+      } ${highlight && status !== 'active' ? 'ring-1 ring-white/10' : ''}`}
     >
-      <div className="flex items-center gap-2">
-        <span className={`${iconColors[status]} ${active ? 'animate-pulse' : ''} text-base`}>
-          {icon}
-        </span>
-        <div>
-          <div className="font-mono text-xs font-semibold leading-tight">{label}</div>
-          {sub && <div className="text-[10px] text-slate-500 font-mono leading-tight mt-0.5">{sub}</div>}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function Arrow({ taken, active }) {
-  return (
-    <div className="flex-shrink-0 w-11 h-0.5 mx-1 transition-colors duration-300 relative bg-slate-800">
-      <div
-        className={`h-full transition-all duration-500 ${
-          taken !== false && active ? 'bg-emerald-500 glow-green' : 'bg-slate-800'
-        }`}
-      />
-      <div
-        className={`absolute right-0 top-1/2 -translate-y-1/2 w-0 h-0
-          border-t-[4px] border-t-transparent
-          border-b-[4px] border-b-transparent
-          ${taken !== false && active ? 'border-l-[6px] border-l-emerald-400' : 'border-l-[6px] border-l-slate-700'}
-        `}
-      />
-    </div>
-  )
-}
-
-function BranchArrow({ label, taken, direction = 'down' }) {
-  const color = taken ? 'text-red-400 font-semibold' : 'text-slate-500'
-  const lineColor = taken ? 'bg-red-500/50 glow-red' : 'bg-slate-800'
-
-  if (direction === 'up') {
-    return (
-      <div className="flex flex-col items-center">
-        <span className={`text-[10px] font-mono ${color} whitespace-nowrap mb-1`}>{label}</span>
-        <div className={`w-0.5 h-4 ${lineColor}`} />
-      </div>
-    )
-  }
-
-  if (direction === 'right') {
-    return (
-      <div className="flex items-center gap-1.5 mx-1">
-        <div className={`w-8 h-0.5 ${lineColor}`} />
-        <span className={`text-[10px] font-mono ${color} whitespace-nowrap`}>{label}</span>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex items-center gap-2 mr-2">
-      <div className={`w-0.5 h-4 ${lineColor}`} />
-      <span className={`text-[10px] font-mono ${color} whitespace-nowrap`}>{label}</span>
-    </div>
-  )
-}
-
-function AgentNode({ name, status, data, branchLabels, branchTaken }) {
-  const isActive = status === 'active'
-  const isDone = status === 'complete'
-  const reasoning = data?.reasoning
-  const verdict = data?.verdict
-
-  return (
-    <div
-      className={`rounded-xl border glass-panel transition-all duration-300 p-3.5 ${
-        isDone ? 'border-emerald-500/40 bg-emerald-950/20' :
-        isActive ? 'border-amber-500/40 bg-amber-950/15 glow-amber' :
-        'border-slate-800 bg-slate-950/40'
-      }`}
-      style={{ minWidth: 230, maxWidth: 320 }}
-    >
-      <div className="flex items-center justify-between gap-2 mb-2">
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${
-            isDone ? 'bg-emerald-400' : isActive ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'
-          }`} />
-          <span className="font-display font-bold text-xs text-white">{name}</span>
-        </div>
-
-        {verdict && (
-          <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${
-            verdict === 'true_positive'
-              ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-              : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-          }`}>
-            {verdict === 'true_positive' ? 'TP' : 'FP'}
-          </span>
-        )}
-      </div>
-
-      {isActive && !reasoning && (
-        <div className="flex items-center gap-1.5 py-2">
-          <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-          <span className="text-amber-300 font-mono text-[11px]">Reasoning live...</span>
-        </div>
-      )}
-
-      {reasoning && (
-        <div className="text-[11px] font-mono text-slate-300 leading-relaxed max-h-[70px] overflow-hidden relative">
-          {reasoning.slice(0, 180)}{reasoning.length > 180 && '...'}
-        </div>
-      )}
-
-      {branchTaken && (
-        <div className="mt-2 pt-2 border-t border-slate-800/60 flex items-center gap-2">
-          <span className={`text-[10px] font-mono font-semibold ${
-            branchTaken === 'left' ? 'text-emerald-400' : 'text-red-400'
-          }`}>
-            → {branchTaken === 'left' ? branchLabels.left : branchLabels.right}
+      <div>
+        {/* Top: Icon & Step */}
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-base lg:text-lg leading-none flex-shrink-0">{icon}</span>
+            <span className="font-display font-bold text-[11px] lg:text-xs text-white tracking-wide truncate">
+              {title}
+            </span>
+          </div>
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-900/80 border border-slate-800 text-slate-400 flex-shrink-0 ml-1">
+            #{step}
           </span>
         </div>
-      )}
+
+        {/* Provider Tag */}
+        <div className="text-[9px] lg:text-[10px] font-mono text-slate-400 mb-2 truncate">
+          {provider}
+        </div>
+      </div>
+
+      <div>
+        {/* Status Badge */}
+        <div
+          className={`px-1.5 lg:px-2 py-1 rounded-lg text-[9px] lg:text-[10px] font-mono font-semibold border truncate mb-1.5 ${
+            badgeStyles[status] || badgeStyles.ready
+          }`}
+        >
+          {statusLabel}
+        </div>
+
+        {/* Short description */}
+        <div className="text-[9px] lg:text-[10px] font-mono text-slate-500 truncate leading-tight">
+          {description}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Decision Branch Resolution Card */
+function BranchCard({ stageNumber, title, rule, activeChoice, choices }) {
+  return (
+    <div className="p-3.5 rounded-xl border border-slate-800/80 bg-slate-900/40 flex flex-col justify-between space-y-2.5">
+      <div>
+        <div className="flex items-center justify-between border-b border-slate-800/70 pb-1.5">
+          <span className="font-display font-bold text-xs text-slate-200 flex items-center gap-1.5">
+            <span className="text-cyan-400 font-mono text-[11px]">#{stageNumber}</span>
+            <span>{title}</span>
+          </span>
+          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-400">
+            {activeChoice ? 'RESOLVED' : 'STANDBY'}
+          </span>
+        </div>
+        <p className="text-[10px] font-mono text-slate-500 mt-1 leading-tight">
+          {rule}
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        {choices.map((choice) => {
+          const isSelected = activeChoice === choice.id
+          return (
+            <div
+              key={choice.id}
+              className={`p-2 rounded-lg border transition-all ${
+                isSelected
+                  ? `${choice.color} shadow-sm font-semibold`
+                  : 'border-slate-800/60 bg-slate-950/40 text-slate-500 opacity-40'
+              }`}
+            >
+              <div className="flex items-center justify-between text-[11px] font-mono">
+                <span className="truncate">{choice.label}</span>
+                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded border border-current ml-1 flex-shrink-0">
+                  {isSelected ? `✓ ${choice.badge}` : choice.badge}
+                </span>
+              </div>
+              <div className="text-[10px] opacity-80 mt-0.5 leading-snug">
+                {choice.sub}
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

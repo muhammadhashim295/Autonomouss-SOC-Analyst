@@ -10,7 +10,6 @@ from app.core.firewall import check_alert, sanitize_snippet
 from app.db.supabase_client import get_supabase
 from app.models.schemas import AlertCreate, AlertResponse, ReinvestigateRequest
 from app.services.actions import decide_and_execute_action
-from app.services.cerebras_client import CerebrasClientError, get_cerebras_client
 from app.services.groq_client import GroqClientError, get_groq_client
 from app.services.investigation import persist_case
 
@@ -91,7 +90,55 @@ async def ingest_alert(
                 f_row.pop("org_id", None)
             client.table("firewall_flags").insert(flag_rows).execute()
 
+        # Flagged alert: escalate DIRECTLY to human analyst without agent investigation
+        client.table("alerts").update({"status": "in_review"}).eq("id", alert_id).execute()
+        inserted["status"] = "in_review"
+
+        action_data = {
+            "action": "escalate_to_human",
+            "reason": f"Firewall flag detected: {', '.join(flags)}",
+            "target": "security_analyst",
+            "reasoning": f"FIREWALL ALERT FLAGGED: Log poisoning or adversarial pattern detected. Flags: {', '.join(flags)}. Escalated directly to human analyst.",
+            "self_audit": "Automated investigation bypassed by security firewall.",
+        }
+        case_row = {
+            "alert_id": alert_id,
+            "mode": "agentic",
+            "primary_verdict": "true_positive",
+            "primary_confidence": 1.0,
+            "secondary_verdict": None,
+            "attack_technique": "T1566",
+            "impact_level": "high_impact",
+            "action_taken": json.dumps(action_data),
+            "action_status": "awaiting_approval",
+            "primary_provider": "firewall",
+            "secondary_provider": None,
+        }
+        if assigned_org_id:
+            case_row["org_id"] = assigned_org_id
+        try:
+            client.table("cases").insert(case_row).execute()
+        except Exception:
+            case_row.pop("org_id", None)
+            try:
+                client.table("cases").insert(case_row).execute()
+            except Exception:
+                pass
+
     return AlertResponse(**inserted)
+
+
+def _resolve_org_uuid(client, org_id: Optional[str]) -> Optional[str]:
+    if not org_id or org_id == "ALL":
+        return None
+    if len(org_id) < 32:
+        try:
+            res = client.table("organizations").select("id").ilike("code", org_id).limit(1).execute()
+            if res.data:
+                return res.data[0]["id"]
+        except Exception:
+            pass
+    return org_id
 
 
 @router.get("/", response_model=list[AlertResponse])
@@ -110,10 +157,11 @@ async def list_alerts(
     if status:
         query = query.eq("status", status)
 
+    resolved_org = _resolve_org_uuid(client, org_id)
     if current_user and current_user.is_client and current_user.org_id:
         query = query.eq("org_id", current_user.org_id)
-    elif org_id:
-        query = query.eq("org_id", org_id)
+    elif resolved_org:
+        query = query.eq("org_id", resolved_org)
 
     result = query.range(offset, offset + limit - 1).execute()
 
@@ -135,10 +183,11 @@ async def list_firewall_flags(
     if alert_id:
         query = query.eq("alert_id", alert_id)
 
+    resolved_org = _resolve_org_uuid(client, org_id)
     if current_user and current_user.is_client and current_user.org_id:
         query = query.eq("org_id", current_user.org_id)
-    elif org_id:
-        query = query.eq("org_id", org_id)
+    elif resolved_org:
+        query = query.eq("org_id", resolved_org)
 
     result = query.limit(limit).execute()
     return result.data or []
@@ -176,13 +225,12 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
     """Trigger the Primary Agent to investigate a specific alert.
 
     Phase 7 full investigation flow:
-    1. Retrieves similar past cases (stub — Phase 11)
+    1. Check firewall flags: if flagged, escalate directly to human analyst
     2. Runs all 4 investigation skills
     3. Sends structured prompt to the Primary Agent (Groq)
     4. Parses the agent's response (verdict, confidence, reasoning, self-audit)
-    5. Classifies impact level
-    6. Persists the case to the ``cases`` table
-    7. Returns the full case record
+    5. If false_positive: close alert + document case (no secondary handoff)
+    6. If true_positive: hand off ready for Secondary Agent
     """
     client = get_supabase()
 
@@ -192,6 +240,22 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Alert not found")
 
     alert = result.data[0]
+
+    # Check firewall flags — if flagged, escalate DIRECTLY to human analyst without AI agents
+    flags_res = client.table("firewall_flags").select("flag_reason").eq("alert_id", alert_id).execute()
+    if flags_res.data:
+        reasons = [r["flag_reason"] for r in flags_res.data]
+        return {
+            "alert_id": alert_id,
+            "source_alert_id": alert.get("source_alert_id"),
+            "verdict": "true_positive",
+            "confidence": 1.0,
+            "impact_level": "high_impact",
+            "action_status": "awaiting_approval",
+            "reasoning": f"Firewall flagged alert: {', '.join(reasons)}. Escalated directly to human analyst without agent investigation.",
+            "primary_provider": "firewall",
+            "escalated_directly": True,
+        }
 
     # 2. Update status to in_review
     client.table("alerts").update({"status": "in_review"}).eq("id", alert_id).execute()
@@ -205,7 +269,6 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
         client.table("alerts").update({"status": "pending"}).eq("id", alert_id).execute()
         raise HTTPException(status_code=502, detail=f"Primary agent error: {exc}")
 
-
     # 4. Persist case to Supabase
     try:
         case = persist_case(
@@ -218,8 +281,18 @@ async def triage_alert(alert_id: str) -> dict[str, Any]:
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"Case persistence error: {exc}")
 
-    # 5. Update alert status to closed (primary investigation complete)
-    client.table("alerts").update({"status": "closed"}).eq("id", alert_id).execute()
+    verdict = triage_result["parsed"].get("verdict", "unknown")
+    if verdict == "false_positive":
+        # FP -> Close alert and case immediately; no secondary handoff
+        client.table("alerts").update({"status": "closed"}).eq("id", alert_id).execute()
+        client.table("cases").update({
+            "action_status": "auto_closed",
+            "action_name": "close_as_fp",
+            "action_reason": "Primary agent classified as false positive; auto-closed without secondary investigation."
+        }).eq("id", case["id"]).execute()
+    else:
+        # TP -> Keep in review for secondary investigation
+        client.table("alerts").update({"status": "in_review"}).eq("id", alert_id).execute()
 
     return {
         "alert_id": alert_id,
@@ -243,19 +316,16 @@ async def reinvestigate_alert(
     alert_id: str,
     request: ReinvestigateRequest | None = None,
 ) -> dict[str, Any]:
-    """Trigger the Secondary Agent to independently re-investigate an alert.
+    """Trigger the Secondary Agent (Groq) to independently re-investigate an alert.
 
-    Phase 8 dual-agent cross-check flow + Phase 10 action pipeline:
-    1. Looks up the alert
-    2. Obtains the Primary Agent's report — either from the request body,
-       or by running the Primary Agent first
-    3. Sends alert + primary's report to the Deep Investigation Agent,
-       which re-derives the evidence independently
-    4. Updates the existing case with the secondary verdict
-    5. Decides and (if allowed) executes the response action — enforced
-       logic: standard actions execute autonomously in agentic mode when
-       confident, high-impact actions always await analyst approval
-    6. Returns both agents' results plus the action outcome
+    Fixed Flow:
+    1. Alert arrives -> firewall check (if flagged, direct human escalation, error if called here)
+    2. Primary Agent (Groq) -> if false_positive, close immediately
+    3. If true_positive -> hand off to Secondary Agent (Groq)
+    4. If Secondary false_positive -> close + document
+    5. If Secondary true_positive:
+       - low/standard impact -> Secondary executes action autonomously, documents with full reasoning
+       - high impact -> ALWAYS escalate to human analyst (awaiting approval)
     """
     client = get_supabase()
 
@@ -265,14 +335,22 @@ async def reinvestigate_alert(
         raise HTTPException(status_code=404, detail="Alert not found")
 
     alert = result.data[0]
-    # One provider per role — hardwired, no toggle.
+
+    # Check firewall flags
+    flags_res = client.table("firewall_flags").select("flag_reason").eq("alert_id", alert_id).execute()
+    if flags_res.data:
+        reasons = [r["flag_reason"] for r in flags_res.data]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Alert is flagged by firewall ({', '.join(reasons)}) and escalated directly to human analyst. Automated agent investigation is disabled.",
+        )
+
     primary_client = get_groq_client()
-    secondary_client = get_cerebras_client()
+    secondary_client = get_groq_client()
 
     # 2. Obtain the primary agent's investigation result
     primary_ran_now = False
     if request and request.primary_report:
-        # Primary report supplied by the caller (e.g. chained after /triage)
         primary_result: dict[str, Any] = {
             "agent_response": request.primary_report,
             "parsed": {
@@ -282,7 +360,6 @@ async def reinvestigate_alert(
         }
         case = _get_or_create_case(client, alert_id, alert, primary_result)
     else:
-        # No report supplied — run the Primary Agent (Groq) first
         try:
             client.table("alerts").update({"status": "in_review"}).eq("id", alert_id).execute()
             primary_result = primary_client.triage_alert(alert)
@@ -303,12 +380,38 @@ async def reinvestigate_alert(
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=f"Case persistence error: {exc}")
 
-    # 3. Run the Secondary Agent's (Cerebras) independent re-investigation
+    # If Primary judged false_positive, auto-close without running Secondary
+    if primary_result["parsed"].get("verdict") == "false_positive":
+        client.table("alerts").update({"status": "closed"}).eq("id", alert_id).execute()
+        client.table("cases").update({
+            "action_status": "auto_closed",
+            "action_name": "close_as_fp",
+            "action_reason": "Primary classified as false positive; auto-closed without secondary investigation."
+        }).eq("id", case["id"]).execute()
+        return {
+            "alert_id": alert_id,
+            "source_alert_id": alert.get("source_alert_id"),
+            "case_id": case["id"],
+            "primary_ran_now": primary_ran_now,
+            "primary_provider": primary_client.provider_name,
+            "secondary_provider": None,
+            "primary": primary_result["parsed"],
+            "secondary": None,
+            "action": {
+                "action_status": "auto_closed",
+                "action_class": "standard",
+                "rationale": "Primary classified as false positive; case closed.",
+                "executed": False,
+                "case_closed": True,
+                "alert_status": "closed",
+            },
+        }
+
+    # 3. Run the Secondary Agent (Groq) independent re-investigation
     try:
         secondary_result = secondary_client.reinvestigate_alert(alert, primary_result)
-    except CerebrasClientError as exc:
+    except GroqClientError as exc:
         raise HTTPException(status_code=502, detail=f"Secondary agent error: {exc}")
-
 
     # 4. Update the case with the secondary verdict
     secondary_verdict = secondary_result["parsed"].get("secondary_verdict")
@@ -318,9 +421,10 @@ async def reinvestigate_alert(
     if update_fields:
         client.table("cases").update(update_fields).eq("id", case["id"]).execute()
 
-    # 5. Phase 10 action pipeline — decide + execute (simulated) the action
-    #    based on the cross-checked verdict.  Enforced logic in
-    #    app/services/actions.py, never LLM discretion.
+    # 5. Decide and execute action based on fixed flow:
+    #    - Disagreement/FP -> close
+    #    - High impact -> human escalation
+    #    - Standard impact -> autonomous execution
     action_outcome = decide_and_execute_action(
         alert=alert,
         case=case,

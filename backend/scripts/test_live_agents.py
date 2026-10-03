@@ -32,7 +32,6 @@ except Exception:
     pass
 
 from app.services.agent_prompts import build_investigation_prompt, build_reinvestigation_prompt
-from app.services.cerebras_client import get_cerebras_client
 from app.services.groq_client import get_groq_client
 from app.services.investigation import classify_impact, parse_agent_response
 from app.services.skills import (
@@ -57,7 +56,7 @@ class _FallbackWatcher(logging.Handler):
 
 
 logging.basicConfig(level=logging.WARNING, format="    log: %(message)s")
-for name in ("app.services.groq_client", "app.services.cerebras_client"):
+for name in ("app.services.groq_client",):
     logging.getLogger(name).addHandler(_FallbackWatcher())
 
 
@@ -78,11 +77,10 @@ def _snip(text: str, n: int = 220) -> str:
 def main() -> None:
     alerts = json.loads(SAMPLES.read_text(encoding="utf-8"))
     groq = get_groq_client()
-    cerebras = get_cerebras_client()
 
     print("=" * 72)
-    print("  GUIDE DEMO ALERTS -> LIVE THREE-PROVIDER PIPELINE")
-    print(f"  Primary={groq.provider_name} (model auto)   Secondary={cerebras.provider_name}")
+    print("  GUIDE DEMO ALERTS -> LIVE TWO-PROVIDER PIPELINE (GROQ)")
+    print(f"  Primary={groq.provider_name}   Secondary={groq.provider_name}")
     print("=" * 72)
 
     summary = []
@@ -110,28 +108,34 @@ def main() -> None:
         print(f"     reasoning: {_snip(p_parsed.get('reasoning', ''))}")
         print(f"     self_audit: {_snip(p_parsed.get('self_audit', ''), 160)}")
 
-        # ── Secondary Agent (Cerebras) ──
-        primary_result = {"agent_response": p_text, "parsed": p_parsed,
-                          "enrichment": enrichment, "impact_level": impact,
-                          "similar_cases": [], "session_id": p_session["id"]}
-        _fallback_flags[0] = False
-        s_session = cerebras.create_session(agent_id="secondary")
-        s_prompt = build_reinvestigation_prompt(alert, atype, payload, enrichment, primary_result, [])
-        cerebras.send_message(s_session["id"], s_prompt)
-        s_text = cerebras.stream_response(s_session["id"])
-        s_live = not _fallback_flags[0]
-        s_parsed = parse_agent_response(s_text)
-        print(f"  SECONDARY(cerebras) : {'LIVE' if s_live else 'FALLBACK'}")
-        print(f"     secondary_verdict={s_parsed.get('secondary_verdict')}  "
-              f"confidence={s_parsed.get('confidence')}  impact={s_parsed.get('impact_level')}")
-        print(f"     reasoning: {_snip(s_parsed.get('reasoning', ''))}")
+        # ── Secondary Agent (Groq) ──
+        # Fixed flow: only runs if primary verdict is true_positive
+        s_parsed = {}
+        s_live = False
+        if p_parsed.get("verdict") == "true_positive":
+            primary_result = {"agent_response": p_text, "parsed": p_parsed,
+                              "enrichment": enrichment, "impact_level": impact,
+                              "similar_cases": [], "session_id": p_session["id"]}
+            _fallback_flags[0] = False
+            s_session = groq.create_session(agent_id="secondary")
+            s_prompt = build_reinvestigation_prompt(alert, atype, payload, enrichment, primary_result, [])
+            groq.send_message(s_session["id"], s_prompt)
+            s_text = groq.stream_response(s_session["id"])
+            s_live = not _fallback_flags[0]
+            s_parsed = parse_agent_response(s_text)
+            print(f"  SECONDARY(groq)     : {'LIVE' if s_live else 'FALLBACK'}")
+            print(f"     secondary_verdict={s_parsed.get('secondary_verdict')}  "
+                  f"confidence={s_parsed.get('confidence')}  impact={s_parsed.get('impact_level')}")
+            print(f"     reasoning: {_snip(s_parsed.get('reasoning', ''))}")
+        else:
+            print("  SECONDARY(groq)     : SKIPPED (Primary verdict was not true_positive)")
 
         summary.append({
             "id": sid, "type": atype, "impact": impact,
             "primary_mode": "LIVE" if p_live else "FALLBACK",
             "primary_verdict": p_parsed.get("verdict"),
             "primary_conf": p_parsed.get("confidence"),
-            "secondary_mode": "LIVE" if s_live else "FALLBACK",
+            "secondary_mode": "LIVE" if s_live else ("N/A" if p_parsed.get("verdict") != "true_positive" else "FALLBACK"),
             "secondary_verdict": s_parsed.get("secondary_verdict"),
         })
 

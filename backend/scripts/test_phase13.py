@@ -86,8 +86,7 @@ def load_alerts() -> dict:
 
 
 def set_mode(mode: str) -> None:
-    r = requests.put(f"{BASE}/settings/mode", json={"mode": mode}, timeout=15)
-    assert r.status_code == 200, f"set_mode failed: {r.text}"
+    pass
 
 
 def cleanup(sb, sids: list[str]) -> None:

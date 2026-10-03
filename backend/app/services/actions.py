@@ -144,45 +144,24 @@ def decide_action(
     secondary_verdict: Optional[str],
     secondary_confidence: Optional[float],
     impact_level: str,
-    mode: str,
     alert_type: str,
     payload: dict[str, Any],
     enrichment: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Decide what action to take after the secondary agent's cross-check.
 
-    This is the enforced decision function (config lookup + rule cascade):
-    it never consults the LLM.  Returns a decision dict with:
-
-    - ``action_id``       the action from the catalog
-    - ``action_class``    ``standard`` | ``high_impact``
-    - ``execute``         whether autonomous execution is allowed
-    - ``action_status``   one of: none | executed | escalated | awaiting_approval
-    - ``target``          the action target (IOC, hostname, account, ...)
-    - ``rationale``       why this decision was reached (for the audit record)
+    Enforced fixed flow (no mode toggle):
+    1. Secondary disagrees or concludes false_positive -> close + document
+    2. Primary was false_positive -> close + document
+    3. Both agree on true_positive:
+       - high_impact -> ALWAYS human-gated (awaiting_approval)
+       - standard / low-impact -> ALWAYS autonomous execution (executed)
     """
-    verdict, agents_agree = _effective_verdict(primary_verdict, secondary_verdict)
     confidence = secondary_confidence if secondary_confidence is not None else 0.5
     threshold = settings.action_confidence_threshold
 
-    # ── 1. Agents disagree → always escalate to a human ─────────────────
-    if verdict is None:
-        suggested = _pick_high_impact_action(alert_type, payload)
-        return {
-            "action_id": suggested["action_id"],
-            "action_class": "high_impact",
-            "execute": False,
-            "action_status": "escalated",
-            "target": suggested["target"],
-            "rationale": (
-                f"Primary and secondary agents disagree "
-                f"(primary={primary_verdict}, secondary={secondary_verdict}); "
-                "autonomous action withheld pending analyst review."
-            ),
-        }
-
-    # ── 2. Cross-checked false positive → close, no action ─────────────
-    if verdict == "false_positive":
+    # 1. Secondary disagrees with primary -> close and document
+    if secondary_verdict in ("false_positive", "disagree"):
         return {
             "action_id": None,
             "action_class": None,
@@ -190,13 +169,27 @@ def decide_action(
             "action_status": "none",
             "target": None,
             "rationale": (
-                f"Cross-checked verdict false_positive (secondary={secondary_verdict}, "
-                f"confidence={confidence:.2f}); case closed with no action."
+                f"Secondary agent concluded false_positive / disagreed with primary "
+                f"(primary={primary_verdict}, secondary={secondary_verdict}); "
+                "case closed with no action."
             ),
         }
 
-    # ── 3. Cross-checked true positive ──────────────────────────────────
-    # 3a. High-impact → ALWAYS human-gated, regardless of mode
+    # 2. Primary false positive -> close, no action
+    if primary_verdict == "false_positive":
+        return {
+            "action_id": None,
+            "action_class": None,
+            "execute": False,
+            "action_status": "none",
+            "target": None,
+            "rationale": (
+                f"Primary verdict false_positive; case closed with no action."
+            ),
+        }
+
+    # 3. True positive confirmed
+    # 3a. High-impact -> ALWAYS human-gated
     if impact_level == "high_impact":
         suggested = _pick_high_impact_action(alert_type, payload)
         return {
@@ -208,67 +201,34 @@ def decide_action(
             "rationale": (
                 f"Impact classification is high_impact (enforced logic); "
                 f"suggested action {suggested['action_id']} requires analyst "
-                "approval regardless of mode."
+                "approval."
             ),
         }
 
-    # 3b. Standard impact, approval mode → pause for review (Phase 12+)
-    if mode == "approval":
-        target = _pick_otx_flagged_target(enrichment or {})
+    # 3b. Standard / low-impact -> ALWAYS autonomous execution
+    target = _pick_otx_flagged_target(enrichment or {})
+    if target:
         return {
-            "action_id": "block_ip" if target else "open_ticket",
-            "action_class": "standard",
-            "execute": False,
-            "action_status": "awaiting_approval",
-            "target": target or alert_type,
-            "rationale": (
-                "Approval mode is active; standard-action decision paused "
-                "for analyst review."
-            ),
-        }
-
-    # 3c. Standard impact, agentic mode, confident → execute
-    if agents_agree and confidence >= threshold:
-        target = _pick_otx_flagged_target(enrichment or {})
-        if target:
-            return {
-                "action_id": "block_ip",
-                "action_class": "standard",
-                "execute": True,
-                "action_status": "executed",
-                "target": target,
-                "rationale": (
-                    f"Cross-checked true_positive with agent agreement at "
-                    f"confidence {confidence:.2f} (threshold {threshold}); "
-                    f"OTX-flagged IOC {target} blocked (single-IOC standard action)."
-                ),
-            }
-        return {
-            "action_id": "open_ticket",
+            "action_id": "block_ip",
             "action_class": "standard",
             "execute": True,
             "action_status": "executed",
-            "target": alert_type,
+            "target": target,
             "rationale": (
-                f"Cross-checked true_positive with agent agreement at "
-                f"confidence {confidence:.2f} (threshold {threshold}); no "
-                "OTX-flagged IOC found — ticket opened for analyst review."
+                f"Cross-checked true_positive: OTX-flagged IOC {target} blocked "
+                "(single-IOC standard action executed autonomously)."
             ),
         }
 
-    # 3d. Standard impact but low confidence / missing cross-check →
-    #     document-only standard action (no system change)
     return {
-        "action_id": "flag_for_review",
+        "action_id": "open_ticket",
         "action_class": "standard",
         "execute": True,
         "action_status": "executed",
         "target": alert_type,
         "rationale": (
-            f"True_positive verdict but confidence {confidence:.2f} below "
-            f"threshold {threshold} or cross-check incomplete "
-            f"(secondary={secondary_verdict}); alert flagged for review — "
-            "no system change."
+            "Cross-checked true_positive: standard action open_ticket "
+            "executed autonomously."
         ),
     }
 
@@ -281,7 +241,6 @@ def execute_action(
     *,
     alert: dict[str, Any],
     case_id: str,
-    mode: str,
 ) -> dict[str, Any]:
     """Simulate executing the decided action and build the audit record.
 
@@ -300,7 +259,6 @@ def execute_action(
             or action_id
         ),
         "target": decision.get("target"),
-        "mode": mode,
         "executed_at": now.isoformat(),
         "simulated": True,
         "case_id": case_id,
@@ -350,9 +308,9 @@ def decide_and_execute_action(
     secondary_parsed: dict[str, Any],
     enrichment: Optional[dict[str, Any]] = None,
     primary_provider: str = "groq",
-    secondary_provider: str = "cerebras",
+    secondary_provider: str = "groq",
 ) -> dict[str, Any]:
-    """Run the full Phase 10 action pipeline for a cross-checked case.
+    """Run the action pipeline for a cross-checked case in the fixed flow.
 
     1. Decide the action (enforced rule cascade — never LLM discretion)
     2. Execute it if allowed (simulated) and build the audit record
@@ -366,20 +324,18 @@ def decide_and_execute_action(
 
     alert_type = alert.get("alert_type", "unknown")
     payload = alert.get("raw_payload", {})
-    mode = case.get("mode", "agentic")
 
     decision = decide_action(
         primary_verdict=primary_parsed.get("verdict"),
         secondary_verdict=secondary_parsed.get("secondary_verdict"),
         secondary_confidence=secondary_parsed.get("confidence"),
         impact_level=case.get("impact_level", "standard"),
-        mode=mode,
         alert_type=alert_type,
         payload=payload,
         enrichment=enrichment,
     )
 
-    record = execute_action(decision, alert=alert, case_id=case["id"], mode=mode)
+    record = execute_action(decision, alert=alert, case_id=case["id"])
 
     # Persist on the case row.  A case closes when the action pipeline has
     # fully resolved (executed or no action needed); it stays open while a

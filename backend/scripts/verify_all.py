@@ -176,30 +176,26 @@ def main() -> None:
     except Exception as e:
         check("4", "GET /alerts/firewall-flags works", False, str(e))
 
-    # ── Phase 5: Three-provider setup (Groq / Cerebras / Cloudflare) ──
-    section("PHASE 5: Three-Provider Setup (Groq / Cerebras / Cloudflare)")
+    # ── Phase 5: Two-provider setup (Groq / Cloudflare) ──
+    section("PHASE 5: Two-Provider Setup (Groq / Cloudflare)")
 
     from app.core.config import settings
-    check("5", "GROQ_API_KEY configured (Primary Agent)", bool(settings.groq_api_key),
+    check("5", "GROQ_API_KEY configured (Primary & Secondary Agents)", bool(settings.groq_api_key),
           f"Model: {settings.groq_model}")
-    check("5", "CEREBRAS_API_KEY configured (Secondary Agent)", bool(settings.cerebras_api_key),
-          f"Model: {settings.cerebras_model}")
     check("5", "CLOUDFLARE_API_TOKEN configured (live feed)", bool(settings.cloudflare_api_token))
     check("5", "CLOUDFLARE_ACCOUNT_ID configured (live feed)", bool(settings.cloudflare_account_id),
           "" if settings.cloudflare_account_id else "REQUIRED for the Workers AI live feed")
 
-    # Instantiate the three provider clients (no live calls here).
+    # Instantiate the provider clients (no live calls here).
     try:
         from app.services.groq_client import get_groq_client
-        from app.services.cerebras_client import get_cerebras_client
         from app.services.cloudflare_client import CloudflareClient
         groq = get_groq_client()
-        cerebras = get_cerebras_client()
         cloudflare = CloudflareClient()
         check("5", "Primary Agent client = Groq", groq.provider_name == "groq",
               f"provider={groq.provider_name}")
-        check("5", "Secondary Agent client = Cerebras", cerebras.provider_name == "cerebras",
-              f"provider={cerebras.provider_name}")
+        check("5", "Secondary Agent client = Groq", groq.provider_name == "groq",
+              f"provider={groq.provider_name}")
         check("5", "Alert generator client = Cloudflare", True,
               f"live-capable={cloudflare.available}")
     except Exception as e:

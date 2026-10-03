@@ -292,17 +292,12 @@ def persist_case(
     primary_provider : str
         Provider that ran the Primary Agent (``"groq"``).
     secondary_provider : str | None
-        Provider that ran the Secondary Agent (``"cerebras"``), or None if the
+        Provider that ran the Secondary Agent (``"groq"``), or None if the
         secondary has not run (e.g. primary-only ``/triage``).
 
     Returns the inserted case row.
     """
     supabase = get_supabase()
-
-    # Phase 12: snapshot the CURRENT global mode onto the case — the case
-    # records the mode under which it was investigated.  get_mode is
-    # fail-safe (defaults to 'agentic' if the store is unreachable).
-    from app.services.settings_store import get_mode
 
     # Multi-tenancy: inherit org_id from the alert
     org_id = None
@@ -315,7 +310,7 @@ def persist_case(
 
     case_row = {
         "alert_id": alert_id,
-        "mode": get_mode(),
+        "mode": "agentic",  # default enum value in DB schema
         "primary_verdict": parsed["verdict"],
         "primary_confidence": parsed["confidence"],
         "attack_technique": parsed.get("attack_technique"),
@@ -324,9 +319,8 @@ def persist_case(
         "action_status": "none",
         "closed_at": None,
         "qoder_memory_record_id": None,
-        # Provider provenance (migration 005): which provider ran each agent.
-        "primary_provider": primary_provider,
-        "secondary_provider": secondary_provider,
+        "primary_provider": primary_provider or "groq",
+        "secondary_provider": None if parsed.get("verdict") == "false_positive" else (secondary_provider or "groq"),
     }
     if org_id:
         case_row["org_id"] = org_id
@@ -352,7 +346,7 @@ def persist_case(
     # Always expose provider provenance on the in-memory case object, even if
     # the columns are not present yet, so API responses stay consistent.
     case.setdefault("primary_provider", primary_provider)
-    case.setdefault("secondary_provider", secondary_provider)
+    case.setdefault("secondary_provider", None if parsed.get("verdict") == "false_positive" else secondary_provider)
 
     # Also store the full reasoning and self-audit as enrichment metadata
     # (the cases table doesn't have columns for these — they live in the

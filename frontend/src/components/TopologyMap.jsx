@@ -57,9 +57,9 @@ export default function TopologyMap({ activeAlert, streamState, alerts = [] }) {
       y: 130,
       status: primaryStatus === 'thinking' || primaryStatus === 'running' ? 'active' : (primaryStatus === 'complete' ? 'complete' : 'idle'),
       icon: '🤖',
-      category: 'Primary LLM Core',
+      category: 'Primary Reasoning Core',
       details: 'Rapid-response triage agent performing initial threat classification, verdict generation, and ATT&CK mapping.',
-      metrics: { model: 'Groq / gpt-oss-120b', avgResponseTime: '1.4s', confidence: streamState?.primary?.confidence ? `${(streamState.primary.confidence * 100).toFixed(0)}%` : '—' },
+      metrics: { engine: 'High-Throughput Reasoning Core', avgResponseTime: '1.4s', confidence: streamState?.primary?.confidence ? `${(streamState.primary.confidence * 100).toFixed(0)}%` : '—' },
     },
     {
       id: 'secondary-agent',
@@ -72,21 +72,21 @@ export default function TopologyMap({ activeAlert, streamState, alerts = [] }) {
       icon: '🧠',
       category: 'Independent Auditor',
       details: 'Independent secondary agent that re-examines evidence without bias, cross-checking the primary verdict against RAG memory.',
-      metrics: { model: 'Cerebras / gpt-oss-120b', crossCheckResult: streamState?.secondary?.verdict || 'Standby', agreement: '100%' },
+      metrics: { engine: 'Forensic Cross-Check Engine', crossCheckResult: streamState?.secondary?.verdict || 'Standby', agreement: '100%' },
     },
 
     // 3. Knowledge & Skill Matrix
     {
       id: 'rag-memory',
       label: 'RAG MEMORY VAULT',
-      subtext: 'Supabase Vector Store',
+      subtext: 'Case Knowledge Vault',
       type: 'memory',
       x: 620,
       y: 130,
       status: stages.investigation === 'complete' ? 'active' : 'idle',
       icon: '💾',
       category: 'Knowledge Store',
-      details: 'Vector database storing past incident cases, similar threat patterns, and analyst correction feedback for RAG recall.',
+      details: 'Secure incident intelligence repository storing past cases, threat patterns, and analyst feedback for contextual recall.',
       metrics: { recordsCount: '1,420 Cases', similarityThreshold: '0.78', recallTime: '18ms' },
     },
     {

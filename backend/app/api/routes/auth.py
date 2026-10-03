@@ -52,18 +52,36 @@ async def login(req: LoginRequest) -> LoginResponse:
     """Authenticate user with Supabase Auth, returning access token, profile and tenant org."""
     supabase = get_supabase()
 
+    email_clean = req.email.strip()
+    pwd = req.password
+
     try:
         auth_res = supabase.auth.sign_in_with_password(
             {
-                "email": req.email.strip(),
-                "password": req.password,
+                "email": email_clean,
+                "password": pwd,
             }
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Authentication failed: {exc}",
-        ) from exc
+    except Exception as first_exc:
+        # If user accidentally included leading/trailing whitespace, try stripped password
+        if pwd != pwd.strip():
+            try:
+                auth_res = supabase.auth.sign_in_with_password(
+                    {
+                        "email": email_clean,
+                        "password": pwd.strip(),
+                    }
+                )
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Authentication failed: {first_exc}",
+                ) from first_exc
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Authentication failed: {first_exc}",
+            ) from first_exc
 
     session = getattr(auth_res, "session", None)
     user = getattr(auth_res, "user", None)

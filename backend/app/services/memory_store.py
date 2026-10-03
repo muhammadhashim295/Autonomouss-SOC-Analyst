@@ -2,8 +2,8 @@
 
 Storage: the ``memory_records`` Supabase table (migration 002).  Case memory
 lives entirely in Supabase — there is no external agent-platform memory store
-in the final three-provider architecture (Groq / Cerebras / Cloudflare Workers
-AI).  The ``cases.qoder_memory_record_id`` column (a legacy name retained for
+in the two-provider architecture (Groq / Cloudflare Workers AI).  The
+``cases.qoder_memory_record_id`` column (a legacy name retained for
 compatibility) points at the record.
 
 Design (design.md "Memory records"): every closed case writes one structured

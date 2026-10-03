@@ -1,17 +1,14 @@
-"""Groq LLM client — Primary Alert Triage Agent.
+"""Groq LLM client — Powers both Primary and Secondary SOC Agents.
 
-Provider 1 of the final three-provider architecture:
-
-- **Groq** → Primary Alert Triage Agent (this module)
-- **Cerebras** → Secondary Deep Investigation Agent (``cerebras_client.py``)
-- **Cloudflare Workers AI** → live alert generator (``cloudflare_client.py``)
+Provider 1 of the 2-provider architecture:
+- **Groq** → Primary Alert Triage Agent AND Secondary Deep Investigation Agent
+- **Cloudflare Workers AI** → Live alert generator (``cloudflare_client.py``)
 
 Groq exposes an OpenAI-compatible Chat Completions API with SSE streaming, so
 this client streams token-by-token and emits ``{"type": "delta", "text": ...}``
-events that the pipeline relays as ``agent_delta``.  Agent behaviour (system
+events that the pipeline relays as ``agent_delta``. Agent behaviour (system
 prompts, structured prompt builders, deterministic fallback text) lives in
-:mod:`app.services.agent_prompts` and is shared verbatim with the Cerebras
-client so both agents parse identically.
+:mod:`app.services.agent_prompts` per role ('primary' vs 'secondary').
 
 All network calls go through :func:`app.services.provider_common.post_with_backoff`
 — rate-limits / transient errors are retried with exponential backoff (1s, 2s,
@@ -128,13 +125,19 @@ class GroqClient:
             raise GroqClientError(f"No prompt found for Groq session {session_id}")
 
         role = sess_data.get("agent_role", "primary")
+        selected_model = (
+            settings.groq_secondary_model
+            if (role == "secondary" and settings.groq_secondary_model)
+            else self._model
+        )
         payload = {
-            "model": self._model,
+            "model": selected_model,
             "messages": [
                 {"role": "system", "content": system_prompt_for_role(role)},
                 {"role": "user", "content": sess_data["prompt"]},
             ],
             "temperature": 0.2,
+            "max_tokens": settings.groq_max_tokens,
             "stream": True,
         }
         url = f"{_GROQ_API_BASE}/chat/completions"
@@ -150,6 +153,14 @@ class GroqClient:
             yield from self._generate_fallback_stream(session_id)
             return
 
+        # Groq streams ``text/event-stream`` with no charset in the header, so
+        # requests defaults ``resp.encoding`` to ISO-8859-1 (per the original
+        # HTTP spec).  ``iter_lines(decode_unicode=True)`` then decodes UTF-8
+        # bytes as Latin-1, baking mojibake (smart quotes, bullets, dashes ->
+        # "a-€-¢") into the Python string before it is ever relayed.  Pin the
+        # decoding to UTF-8 explicitly — this is the root-cause fix.
+        resp.encoding = "utf-8"
+
         if resp.status_code != 200:
             logger.warning(
                 "Groq API returned HTTP %s (%s) — using deterministic fallback report.",
@@ -161,6 +172,8 @@ class GroqClient:
             return
 
         yielded_any = False
+        finish_reason: str | None = None
+        collected_chars = 0
         try:
             for raw_line in resp.iter_lines(decode_unicode=True):
                 if not raw_line:
@@ -178,16 +191,38 @@ class GroqClient:
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue
+                # Track why the stream ended so a truncated report is visible
+                # rather than silently mistaken for a clean handoff.
+                if choices[0].get("finish_reason"):
+                    finish_reason = choices[0]["finish_reason"]
                 # gpt-oss reasoning models stream reasoning separately; only the
                 # final answer (``content``) forms the structured report we parse.
                 content_piece = choices[0].get("delta", {}).get("content", "")
                 if content_piece:
                     yielded_any = True
+                    collected_chars += len(content_piece)
                     yield {"type": "delta", "text": content_piece}
         except requests.RequestException as exc:
-            logger.warning("Groq stream interrupted (%s).", exc)
+            logger.error(
+                "Groq stream interrupted mid-response for session %s (role=%s): %s — "
+                "collected %d chars before the drop.",
+                session_id, role, exc, collected_chars,
+            )
+        except Exception as exc:  # noqa: BLE001 — never let a decode/parse blip die silently
+            logger.exception(
+                "Unexpected error while streaming Groq response for session %s: %s",
+                session_id, exc,
+            )
         finally:
             resp.close()
+
+        if finish_reason == "length":
+            logger.warning(
+                "Groq report for session %s (role=%s) was TRUNCATED at the token cap "
+                "(max_tokens=%s) — reasoning may end mid-sentence. Raise groq_max_tokens "
+                "if this persists.",
+                session_id, role, settings.groq_max_tokens,
+            )
 
         if not yielded_any:
             logger.warning("Groq returned an empty stream — using deterministic fallback report.")

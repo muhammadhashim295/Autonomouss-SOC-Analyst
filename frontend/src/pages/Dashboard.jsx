@@ -73,7 +73,7 @@ export default function Dashboard() {
     setError(null)
     try {
       await startLiveFeed()
-      navigate(`/orchestration/${client.shortName.toLowerCase().replace(/\s+/g, '-')}`)
+      navigate(`/orchestration/${(client.orgCode || client.shortName).toLowerCase()}`)
     } catch (err) {
       setError(err.message)
       setLoading(null)
@@ -141,7 +141,7 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-2">
             <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] uppercase font-bold tracking-wider">
-              POSTGRES RLS LOCKED
+              SECURE ENCLAVE
             </span>
             <span className="text-[10px] text-slate-400">Isolated Tenant Environment</span>
           </div>

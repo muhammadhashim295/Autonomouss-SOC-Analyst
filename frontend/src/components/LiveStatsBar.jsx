@@ -1,7 +1,7 @@
 /**
- * Top status bar showing live feed stats, active threats, and global agent mode toggle.
+ * Top status bar showing live feed stats and pipeline status.
  */
-export default function LiveStatsBar({ feedStatus, stats, mode, onModeToggle }) {
+export default function LiveStatsBar({ feedStatus, stats }) {
   const isRunning = feedStatus === 'running'
 
   return (
@@ -17,7 +17,7 @@ export default function LiveStatsBar({ feedStatus, stats, mode, onModeToggle }) 
           </div>
           <span className="font-mono text-xs font-semibold uppercase tracking-wider text-slate-300">
             {isRunning ? (
-              <span className="text-emerald-400 text-glow-green">LIVE CLOUDFLARE THREAT FEED</span>
+              <span className="text-emerald-400 text-glow-green">LIVE TELEMETRY THREAT FEED</span>
             ) : (
               <span className="text-slate-500">FEED STANDBY</span>
             )}
@@ -35,7 +35,7 @@ export default function LiveStatsBar({ feedStatus, stats, mode, onModeToggle }) 
 
             <div className="flex items-center gap-1.5">
               <span className="text-slate-500">Source:</span>
-              <span className="text-emerald-400 font-semibold">Cloudflare AI</span>
+              <span className="text-emerald-400 font-semibold">Sovereign Sensor Stream</span>
             </div>
 
             <span className="text-slate-700">│</span>
@@ -62,24 +62,10 @@ export default function LiveStatsBar({ feedStatus, stats, mode, onModeToggle }) 
         </span>
       </div>
 
-
-      {/* Right: Global Agent Mode Switch */}
-      <div className="flex items-center gap-3">
-        <span className="font-mono text-xs text-slate-400 font-medium">OPERATIONAL MODE:</span>
-        <button
-          onClick={onModeToggle}
-          title="Click to toggle between autonomous execution (Agentic) and human analyst review (Approval)"
-          className={`group relative px-3 py-1 rounded-lg font-mono text-xs font-semibold border transition-all duration-300 flex items-center gap-2 cursor-pointer ${
-            mode === 'agentic'
-              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 glow-green'
-              : 'border-amber-500/40 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 glow-amber'
-          }`}
-        >
-          <span className={`w-2 h-2 rounded-full ${
-            mode === 'agentic' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-pulse'
-          }`} />
-          <span>{mode === 'agentic' ? '⚡ AGENTIC MODE' : '🛡 APPROVAL MODE'}</span>
-        </button>
+      {/* Right: Pipeline Architecture */}
+      <div className="flex items-center gap-2.5 px-3 py-1 rounded-lg bg-slate-950/60 border border-slate-800/80 font-mono text-xs">
+        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+        <span className="text-slate-300 font-semibold tracking-wider uppercase text-[11px]">Autonomous Dual-Agent Pipeline</span>
       </div>
     </div>
   )

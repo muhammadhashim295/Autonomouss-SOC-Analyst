@@ -8,7 +8,7 @@ BASE = "http://localhost:8000"
 
 def main() -> None:
     print("=" * 60)
-    print("PHASE 5 — QODER AGENT TRIAGE TEST")
+    print("PHASE 5 — PRIMARY AGENT TRIAGE TEST")
     print("=" * 60)
 
     # 1. Get alerts

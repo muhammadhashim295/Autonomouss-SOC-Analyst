@@ -29,6 +29,19 @@ class AnalystDecisionRequest(BaseModel):
     analyst_reasoning: Optional[str] = None
 
 
+def _resolve_org_uuid(client, org_id: Optional[str]) -> Optional[str]:
+    if not org_id or org_id == "ALL":
+        return None
+    if len(org_id) < 32:
+        try:
+            res = client.table("organizations").select("id").ilike("code", org_id).limit(1).execute()
+            if res.data:
+                return res.data[0]["id"]
+        except Exception:
+            pass
+    return org_id
+
+
 @router.get("/")
 async def list_cases(
     status: Optional[str] = Query(None, description="Filter by action_status"),
@@ -48,10 +61,11 @@ async def list_cases(
     if status:
         query = query.eq("action_status", status)
 
+    resolved_org = _resolve_org_uuid(supabase, org_id)
     if current_user and current_user.is_client and current_user.org_id:
         query = query.eq("org_id", current_user.org_id)
-    elif org_id:
-        query = query.eq("org_id", org_id)
+    elif resolved_org:
+        query = query.eq("org_id", resolved_org)
 
     result = query.range(offset, offset + limit - 1).execute()
     return result.data or []

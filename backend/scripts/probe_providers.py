@@ -81,29 +81,24 @@ def probe_groq() -> None:
         print(f"  {FAIL} POST /chat/completions connection error: {exc}")
 
 
-# ── Cerebras — Secondary Agent ────────────────────────────────────────────────
+# ── Groq — Secondary Agent ───────────────────────────────────────────────
 
 
-def probe_cerebras() -> None:
-    section("CEREBRAS — Secondary Deep Investigation Agent")
-    key = settings.cerebras_api_key
+def probe_groq_secondary() -> None:
+    section("GROQ — Secondary Deep Investigation Agent")
+    key = settings.groq_api_key
     if not key:
-        print(f"  {FAIL} CEREBRAS_API_KEY not set")
+        print(f"  {FAIL} GROQ_API_KEY not set")
         return
-    print(f"  model = {settings.cerebras_model}")
+    model = settings.groq_secondary_model or settings.groq_model
+    print(f"  model = {model}")
     h = {"Authorization": f"Bearer {key}"}
     try:
-        r = requests.get("https://api.cerebras.ai/v1/models", headers=h, timeout=30)
-        print(f"  {PASS if r.status_code == 200 else FAIL} GET /models -> {r.status_code}")
-    except requests.RequestException as exc:
-        print(f"  {FAIL} GET /models connection error: {exc}")
-        return
-    try:
         r = requests.post(
-            "https://api.cerebras.ai/v1/chat/completions",
+            "https://api.groq.com/openai/v1/chat/completions",
             headers=h,
             json={
-                "model": settings.cerebras_model,
+                "model": model,
                 "messages": [{"role": "user", "content": "Reply with the single word: OK"}],
                 "max_tokens": 5,
                 "stream": False,
@@ -114,8 +109,6 @@ def probe_cerebras() -> None:
         print(f"  {PASS if ok else FAIL} POST /chat/completions -> {r.status_code}")
         if not ok:
             print(f"        body: {r.text[:280]}")
-            if r.status_code == 402:
-                print("        -> 402 quota: enable Cerebras inference quota/billing for this key.")
         else:
             choice = r.json().get("choices", [{}])[0]
             print(f"        reply: {str(choice.get('message', {}).get('content'))[:80]!r}")
@@ -229,10 +222,10 @@ def probe_retry_backoff() -> None:
 
 def main() -> None:
     print("=" * 66)
-    print("  THREE-PROVIDER HEALTH PROBE — Autonomous SOC Analyst Framework")
+    print("  TWO-PROVIDER HEALTH PROBE — Autonomous SOC Analyst Framework")
     print("=" * 66)
     probe_groq()
-    probe_cerebras()
+    probe_groq_secondary()
     probe_cloudflare()
     probe_retry_backoff()
     print(f"\n{'=' * 66}\n  Probe complete.\n{'=' * 66}\n")

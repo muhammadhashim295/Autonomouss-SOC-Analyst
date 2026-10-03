@@ -14,16 +14,24 @@ A two-tier multi-agent system that triages, investigates, and responds to securi
 
 ## Architecture summary (see architecture.md for full detail)
 - **Primary Agent (Alert Triage Agent) — Groq:** initial investigation, basic response, documentation, step-by-step reasoning, self-auditing.
-- **Secondary Agent (Deep Investigation Agent) — Cerebras:** independently re-investigates the primary agent's output; executes standard remediation itself; escalates higher-impact decisions to a human analyst.
-- **Firewall layer:** filters malicious/poisoned logs so no alert can be dismissed via log poisoning.
+- **Secondary Agent (Deep Investigation Agent) — Groq:** independently re-investigates the primary agent's output with its own prompt; executes standard remediation itself; escalates high-impact decisions to a human analyst.
+- **Firewall layer:** pre-execution check for log-poisoning and adversarial directives. If flagged, escalates DIRECTLY to human analyst without agent investigation.
+- **Live Alert Feed — Cloudflare Workers AI:** generates real-time synthetic alert traffic with realistic payloads and injected poison scenarios.
 - **Per-agent IAM:** each agent has only the permissions it needs.
 
-## Operating modes
-A global toggle between:
-1. **Agentic mode** — secondary agent acts autonomously on standard/low-impact actions; documents everything with clear explanation.
-2. **Approval mode** — secondary agent escalates standard-impact decisions to a human analyst with evidence and a reasoned suggestion; analyst approves, redirects, or acts themselves.
-
-**Hard rule, both modes:** high-impact actions always require human approval. Mode never overrides this.
+## Fixed operational flow (no mode toggle)
+The system operates on an enforced, deterministic flow without an agentic/approval mode toggle:
+1. **Alert arrives → Firewall check**:
+   - If flagged: escalates DIRECTLY to human analyst (Primary and Secondary agents are bypassed entirely).
+   - If clean: passes to Primary Agent.
+2. **Primary Agent (Groq)**:
+   - `false_positive` → close + document case (no Secondary handoff).
+   - `true_positive` → hand off to Secondary Agent.
+3. **Secondary Agent (Groq)**:
+   - `false_positive` (disagrees with primary) → close + document case.
+   - `true_positive` (agrees with primary) → check impact level:
+     - **Standard / low-impact action**: Secondary Agent executes autonomously and documents reasoning (ALWAYS autonomous).
+     - **High-impact action**: ALWAYS escalated to human analyst with evidence, reasoning, and suggested action.
 
 ## Learning
 The system "learns" via retrieval-augmented case memory, not model retraining:
@@ -43,12 +51,12 @@ Standard: block IOC, open ticket, tag/flag for review.
 High-impact (always human-gated): isolate host, disable/lock account, any action on a critical asset, any multi-asset action.
 
 ## Success criteria for the hackathon submission
-- Fully functional system: real backend, real API integrations (OTX, Groq, Cerebras, Cloudflare Workers AI), real database (Supabase), not just a workflow demo.
-- Two distinct, independently reasoning agents actually running.
+- Fully functional system: real backend, real API integrations (OTX, Groq for both agents, Cloudflare Workers AI for alert generator), real database (Supabase), not just a workflow demo.
+- Two distinct, independently reasoning agents actually running on Groq with separate roles and prompts.
 - Demonstrable, enforced IAM scoping per agent (not just prompt-level).
-- A real, testable log-poisoning firewall (proven against crafted test cases and continuously via the Cloudflare Workers AI-generated live feed with ~15% poison ratio).
+- A real, testable log-poisoning firewall that directly escalates flagged alerts to human analysts without running agent investigation.
 - A working human-in-the-loop escalation and override flow, with the override visibly updating agent memory for future cases.
-- A clear demonstration that high-impact actions are always human-gated, in both modes.
+- Enforced fixed flow: standard actions execute autonomously; high-impact actions always gate on human approval.
 - A "Generate Live Feed" button that triggers real-time, Cloudflare Workers AI-generated alert traffic to demonstrate continuous autonomous operation.
 
 ## Explicit non-goals (MVP scope)

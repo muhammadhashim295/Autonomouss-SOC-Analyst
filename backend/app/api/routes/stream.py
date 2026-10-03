@@ -22,6 +22,10 @@ Design notes:
 - Errors mid-stream become an ``investigation_error`` event (the HTTP
   status is already committed by then) and the alert is reverted to
   ``pending`` for retry — mirroring the endpoint contract.
+- The pre-flight reads happen *before* that status is committed, so a
+  transient Supabase blip there would otherwise surface as a bare HTTP
+  500 and leave the UI with a frozen pipeline.  They are translated into
+  an explicit 503 the client can retry instead.
 """
 
 from __future__ import annotations
@@ -56,7 +60,18 @@ async def stream_investigation(
     """Stream a full dual-agent investigation as live SSE events."""
     client = get_supabase()
 
-    result = client.table("alerts").select("*").eq("id", alert_id).execute()
+    # ── Pre-flight: these run before the SSE status is committed, so any
+    #    transient storage failure must become a retryable 503 rather than a
+    #    raw 500 (which the UI can only report as "HTTP 500" on a dead run).
+    try:
+        result = client.table("alerts").select("*").eq("id", alert_id).execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Alert fetch failed for stream %s: %s", alert_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Alert store unavailable — please retry the investigation.",
+        ) from exc
+
     if not result.data:
         raise HTTPException(status_code=404, detail="Alert not found")
     alert = result.data[0]
@@ -68,9 +83,16 @@ async def stream_investigation(
                 detail="Forbidden: You do not have access to this tenant's alert.",
             )
 
-    client.table("alerts").update({"status": "in_review"}).eq(
-        "id", alert_id
-    ).execute()
+    try:
+        client.table("alerts").update({"status": "in_review"}).eq(
+            "id", alert_id
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Could not mark alert %s in_review: %s", alert_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Alert store unavailable — please retry the investigation.",
+        ) from exc
 
     events: "queue.Queue[dict[str, Any] | None]" = queue.Queue()
 
@@ -90,9 +112,14 @@ async def stream_investigation(
                 }
             )
             # Mirror the endpoint contract: revert so the alert can retry
-            get_supabase().table("alerts").update({"status": "pending"}).eq(
-                "id", alert_id
-            ).execute()
+            try:
+                get_supabase().table("alerts").update({"status": "pending"}).eq(
+                    "id", alert_id
+                ).execute()
+            except Exception:  # noqa: BLE001 — never mask the reported error
+                logger.exception(
+                    "Could not revert alert %s to pending after a stream error", alert_id
+                )
         finally:
             events.put(None)  # sentinel — stream over
 
@@ -116,7 +143,9 @@ async def stream_investigation(
 
     return StreamingResponse(
         event_stream(),
-        media_type="text/event-stream",
+        # Explicit charset so the browser (and any intermediary) decodes the
+        # UTF-8 reasoning stream correctly — matches the frontend TextDecoder.
+        media_type="text/event-stream; charset=utf-8",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",  # disable proxy buffering

@@ -19,9 +19,10 @@ Background task that calls Cloudflare Workers AI to generate realistic, varied s
 Verify: start a generation run, confirm alerts appear in `alerts` table with `LIVE-*` source IDs; confirm poison alerts are flagged by the firewall; confirm stop cancels early.
 *Frontend button deferred to Phase 15b.*
 
-**4. Log-poisoning firewall (middleware)**
+**4. Log-poisoning firewall (middleware & direct escalation)**
 Sanitization/validation layer between ingestion and agents; flags/rejects malformed or injection-pattern content; writes to `firewall_flags`.
-Verify: normal alert passes clean; a crafted poisoned-log test case is caught and logged.
+**Fixed behavior:** If flagged, the alert escalates DIRECTLY to a human analyst in `awaiting_approval` without running Primary or Secondary agent investigation.
+Verify: normal alert passes clean to Primary Agent; a crafted poisoned-log test case (e.g. `GUIDE-POISON-001`) is caught, flagged, and directly escalated to human review without AI agents.
 
 **5. Primary Agent setup (Groq)**
 Wire the Primary Alert Triage Agent to Groq's OpenAI-compatible Chat Completions API (streaming). Load the OTX key for IOC enrichment; scope the agent read-only on logs/IOC lookups + documentation-write, with no execution path.
@@ -36,34 +37,44 @@ Verify each individually on a known test alert.
 
 **7. Primary agent full investigation flow**
 Wire skills together → verdict + confidence + reasoning + self-audit statement.
-Verify: consistent, evidence-cited output across several test alerts.
+- If false_positive: close case and document immediately (no Secondary handoff).
+- If true_positive: hand off to Secondary Agent.
+Verify: consistent, evidence-cited output across test alerts.
 
-**8. Secondary Agent setup (Cerebras)**
-Wire the Secondary Deep Investigation Agent to Cerebras' OpenAI-compatible Chat Completions API (streaming), mirroring the Groq client interface. Execution is scoped to standard/low-impact actions only (no high-impact permissions).
-Verify: a virtual session is created and the agent can read the primary's output and re-investigate independently.
+**8. Secondary Agent setup (Groq)**
+Wire the Secondary Deep Investigation Agent to Groq using an independent auditor role prompt and separate virtual session. Execution is scoped to standard/low-impact actions only (no high-impact permissions).
+Verify: a virtual session is created and the agent can read the primary's output and re-investigate independently via Groq.
 
 **9. Secondary agent's independent re-investigation**
 Reuses Step 6 skills to cross-check rather than trust primary's verdict outright.
-Verify: secondary agent occasionally disagrees with primary on deliberately ambiguous test cases.
+Verify: secondary agent independently re-examines evidence and can disagree on ambiguous test cases.
 
 **10. Impact classification + standard-action execution**
-Config/skill defining standard vs. high-impact actions. Secondary agent executes standard actions when confident (simulated, logged).
-Verify: agentic-mode TP produces a logged, documented action.
+Config/skill defining standard vs. high-impact actions in `app/services/actions.py`:
+- Standard / low-impact: executed autonomously, documented with full reasoning (ALWAYS autonomous).
+- High-impact: ALWAYS pauses for human analyst approval (`awaiting_approval`).
+Verify: standard TP executes autonomously; high-impact TP pauses for analyst approval.
 
 **11. Case memory + retrieval + learning (Supabase)**
 Use the Supabase `memory_records` table as the shared case memory for both agents. Write structured case records on close; retrieve similar past cases before new investigations.
 Verify: two similar alerts in sequence — second references the first.
 
-**12. Mode toggle + escalation path (approval mode)**
-Global agentic/approval toggle. Approval mode pauses standard-action decisions for analyst review. High-impact always pauses regardless of mode.
-Verify both branches.
+**12. Fixed operational flow (mode toggle removed)**
+Enforce the fixed flow pipeline without the former agentic/approval mode toggle:
+1. Alert arrives → firewall check.
+2. Firewall flags the alert → escalate DIRECTLY to human analyst without agent investigation.
+3. Clean alert → Primary Agent investigates (Groq). If FP → close + document. If TP → hand off to Secondary.
+4. Secondary Agent investigates (Groq). If FP → close + document. If TP:
+   - low/standard impact → Secondary executes action autonomously (ALWAYS autonomous).
+   - high impact → ALWAYS escalate to human analyst.
+Verify all 4 scenarios.
 
 **13. Analyst decision handling + correction memory**
 Endpoint/flow for analyst to approve, redirect, or self-act. Overrides written as distinct correction records.
 Verify: override an alert, replay a similar one, confirm the agent's next suggestion reflects the correction.
 
 **14. SSE streaming from backend**
-The backend emits its own provider-driven SSE events (`investigation_started`, `agent_started`, `agent_delta`, `agent_complete`, `action_decided`, `investigation_complete`) so agent reasoning appears live and identically regardless of which provider runs an agent.
+The backend emits its own provider-driven SSE events (`investigation_started`, `agent_started`, `agent_delta`, `agent_complete`, `action_decided`, `investigation_complete`) so agent reasoning appears live as tokens stream from Groq.
 Verify: reasoning appears progressively in a basic test client.
 
 **15. Frontend: alert queue + case detail**
@@ -75,8 +86,8 @@ React dashboard — alert/case list, case detail with both agents' reasoning cha
 **16. Frontend: escalation/approval screen**
 Evidence + suggested action + approve/redirect/self-act controls, wired to Step 13.
 
-**17. Frontend: mode toggle + memory-update indicator**
-Visible agentic/approval switch; visible signal when a correction is written to memory.
+**17. Frontend: memory-update indicator + fixed flow UI**
+Mode toggle removed; clean UI shows autonomous dual-agent pipeline status and visible confirmation when a correction is written to memory.
 
 **18. Deploy**
 Frontend to Vercel, backend to Railway/Render, environment variables/secrets configured.
